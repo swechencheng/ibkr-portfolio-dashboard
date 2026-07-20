@@ -1,0 +1,248 @@
+import json
+import asyncio
+import logging
+from typing import Optional
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel
+import uvicorn
+
+from ib_async import IB, util
+from ibkr_portfolio import IbkrPortfolio
+
+logging.basicConfig(level=logging.INFO)
+LOGGER = logging.getLogger("backend")
+
+# Load config
+try:
+    with open("config.json", "r") as f:
+        config = json.load(f)
+except Exception as e:
+    LOGGER.error(f"Failed to load config.json: {e}")
+    config = {}
+
+server_port = config.get("server", {}).get("port", 6001)
+
+app = FastAPI()
+
+
+# WebSocket Manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+
+class IBKREnvironment:
+    def __init__(self, env_name: str, host: str, port: int, client_id: int):
+        self.env_name = env_name
+        self.host = host
+        self.port = port
+        self.client_id = client_id
+
+        self.ib = IB()
+        self.portfolio: Optional[IbkrPortfolio] = None
+        self.manager = ConnectionManager()
+
+        self.ib.orderStatusEvent += self.on_order_status
+        self.ib.execDetailsEvent += self.on_exec_details
+        self.ib.updatePortfolioEvent += self.on_update_portfolio
+        self.ib.accountValueEvent += self.on_update_account_value
+
+    def on_order_status(self, trade):
+        asyncio.create_task(self.manager.broadcast({"type": "order_update"}))
+
+    def on_exec_details(self, trade, fill):
+        asyncio.create_task(self.manager.broadcast({"type": "fill"}))
+
+    def on_update_portfolio(self, item):
+        if self.portfolio:
+            try:
+                summary = self.portfolio.get_account_summary()
+                positions = self.portfolio.get_portfolio_positions()
+                asyncio.create_task(
+                    self.manager.broadcast(
+                        {
+                            "type": "portfolio_update",
+                            "summary": summary,
+                            "positions": positions,
+                        }
+                    )
+                )
+            except Exception as e:
+                LOGGER.error(f"[{self.env_name}] Error handling portfolio update: {e}")
+
+    def on_update_account_value(self, value):
+        if self.portfolio:
+            try:
+                summary = self.portfolio.get_account_summary()
+                positions = self.portfolio.get_portfolio_positions()
+                asyncio.create_task(
+                    self.manager.broadcast(
+                        {
+                            "type": "portfolio_update",
+                            "summary": summary,
+                            "positions": positions,
+                        }
+                    )
+                )
+            except Exception as e:
+                LOGGER.error(
+                    f"[{self.env_name}] Error handling account value update: {e}"
+                )
+
+    async def connect_loop(self):
+        while True:
+            try:
+                if not self.ib.isConnected():
+                    LOGGER.info(
+                        f"[{self.env_name}] Connecting to IBKR {self.host}:{self.port} clientId={self.client_id}"
+                    )
+                    await self.ib.connectAsync(
+                        self.host, self.port, clientId=self.client_id
+                    )
+                    LOGGER.info(f"[{self.env_name}] Connected to IBKR")
+                    self.portfolio = IbkrPortfolio(self.ib)
+                    await self.manager.broadcast(
+                        {"type": "ibkr_status", "connected": True}
+                    )
+                await asyncio.sleep(5)
+            except Exception as e:
+                LOGGER.error(f"[{self.env_name}] IBKR Connection error: {e}")
+                await self.manager.broadcast(
+                    {"type": "ibkr_status", "connected": False}
+                )
+                await asyncio.sleep(5)
+
+
+envs = {}
+ibkr_settings = config.get("ibkr", {})
+for env_name in ["paper", "real"]:
+    if env_name in ibkr_settings:
+        env_config = ibkr_settings[env_name]
+        host = env_config.get("host", "127.0.0.1")
+        port = env_config.get("port", 4002)
+        client_id = env_config.get("client_id", 0)
+        envs[env_name] = IBKREnvironment(env_name, host, port, client_id)
+
+
+@app.on_event("startup")
+async def startup_event():
+    for env in envs.values():
+        asyncio.create_task(env.connect_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    for env in envs.values():
+        if env.ib.isConnected():
+            env.ib.disconnect()
+
+
+# REST Endpoints
+@app.get("/api/{env_name}/portfolio/summary")
+async def get_summary(env_name: str):
+    env = envs.get(env_name)
+    if env and env.portfolio and env.ib.isConnected():
+        return env.portfolio.get_account_summary()
+    return {}
+
+
+@app.get("/api/{env_name}/portfolio/positions")
+async def get_positions(env_name: str):
+    env = envs.get(env_name)
+    if env and env.portfolio and env.ib.isConnected():
+        return {
+            "positions": env.portfolio.get_portfolio_positions(),
+            "pnl": env.portfolio.get_pnl_summary(),
+        }
+    return {"positions": [], "pnl": {}}
+
+
+@app.get("/api/{env_name}/portfolio/orders")
+async def get_orders(env_name: str):
+    env = envs.get(env_name)
+    if env and env.portfolio and env.ib.isConnected():
+        return {"orders": env.portfolio.get_open_orders()}
+    return {"orders": []}
+
+
+@app.get("/api/{env_name}/portfolio/executions")
+async def get_executions(env_name: str):
+    env = envs.get(env_name)
+    if env and env.portfolio and env.ib.isConnected():
+        return {"executions": env.portfolio.get_executions()}
+    return {"executions": []}
+
+
+class CancelOrderReq(BaseModel):
+    orderId: int
+
+
+@app.post("/api/{env_name}/cancel_order")
+async def cancel_order(env_name: str, req: CancelOrderReq):
+    env = envs.get(env_name)
+    if env and env.ib.isConnected():
+        for trade in env.ib.openTrades():
+            if trade.order.orderId == req.orderId:
+                env.ib.cancelOrder(trade.order)
+                return {"status": "success"}
+    return {"status": "error", "detail": "Order not found or IB disconnected"}
+
+
+# WebSockets
+@app.websocket("/ws/{env_name}")
+async def websocket_endpoint(websocket: WebSocket, env_name: str):
+    env = envs.get(env_name)
+    if not env:
+        await websocket.close()
+        return
+
+    await env.manager.connect(websocket)
+    try:
+        await websocket.send_json(
+            {"type": "ibkr_status", "connected": env.ib.isConnected()}
+        )
+        while True:
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        env.manager.disconnect(websocket)
+
+
+# Serve static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/")
+async def get_index_redirect():
+    return RedirectResponse(url="/paper")
+
+
+@app.get("/paper")
+async def get_paper_index():
+    return FileResponse("static/index.html")
+
+
+@app.get("/real")
+async def get_real_index():
+    return FileResponse("static/index.html")
+
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=server_port, reload=True)
