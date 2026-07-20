@@ -28,8 +28,9 @@ class IbkrPortfolio:
     responsible for connecting/disconnecting.
     """
 
-    def __init__(self, ib: IB):
+    def __init__(self, ib: IB, account: Optional[str] = None):
         self.ib = ib
+        self.account = account
         self._pnl_subscribed = False
         self._pnl_single_subscribed: Dict[int, bool] = {}
 
@@ -97,6 +98,9 @@ class IbkrPortfolio:
         base_currency = None
 
         for av in values:
+            if self.account and av.account != self.account:
+                continue
+
             if account_id is None:
                 account_id = av.account
 
@@ -168,6 +172,9 @@ class IbkrPortfolio:
         positions = []
 
         for item in items:
+            if self.account and item.account != self.account:
+                continue
+
             contract = item.contract
             position = float(item.position)
             market_price = float(item.marketPrice) if item.marketPrice else 0.0
@@ -222,6 +229,8 @@ class IbkrPortfolio:
         for av in merged_values:
             if av.account == "All":
                 continue
+            if self.account and av.account != self.account:
+                continue
 
             tag = (
                 av.tag.replace("$LEDGER-", "")
@@ -237,6 +246,8 @@ class IbkrPortfolio:
         seen_cash_balances = set()
         for av in merged_values:
             if av.account == "All":
+                continue
+            if self.account and av.account != self.account:
                 continue
 
             tag = (
@@ -298,6 +309,9 @@ class IbkrPortfolio:
                 continue
 
             order = trade.order
+            if self.account and order.account != self.account:
+                continue
+
             contract = trade.contract
 
             price = None
@@ -362,8 +376,11 @@ class IbkrPortfolio:
         executions = []
 
         for fill in fills:
-            contract = fill.contract
             exec_ = fill.execution
+            if self.account and exec_.acctNumber != self.account:
+                continue
+
+            contract = fill.contract
             comm = fill.commissionReport
 
             executions.append(

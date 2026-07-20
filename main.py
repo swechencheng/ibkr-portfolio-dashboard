@@ -50,11 +50,19 @@ class ConnectionManager:
 
 
 class IBKREnvironment:
-    def __init__(self, env_name: str, host: str, port: int, client_id: int):
+    def __init__(
+        self,
+        env_name: str,
+        host: str,
+        port: int,
+        client_id: int,
+        account: Optional[str] = None,
+    ):
         self.env_name = env_name
         self.host = host
         self.port = port
         self.client_id = client_id
+        self.account = account
 
         self.ib = IB()
         self.portfolio: Optional[IbkrPortfolio] = None
@@ -118,7 +126,7 @@ class IBKREnvironment:
                         self.host, self.port, clientId=self.client_id
                     )
                     LOGGER.info(f"[{self.env_name}] Connected to IBKR")
-                    self.portfolio = IbkrPortfolio(self.ib)
+                    self.portfolio = IbkrPortfolio(self.ib, account=self.account)
                     await self.manager.broadcast(
                         {"type": "ibkr_status", "connected": True}
                     )
@@ -139,7 +147,8 @@ for env_name in ["paper", "real"]:
         host = env_config.get("host", "127.0.0.1")
         port = env_config.get("port", 4002)
         client_id = env_config.get("client_id", 0)
-        envs[env_name] = IBKREnvironment(env_name, host, port, client_id)
+        account = env_config.get("account")
+        envs[env_name] = IBKREnvironment(env_name, host, port, client_id, account)
 
 
 @app.on_event("startup")
