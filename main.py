@@ -1,5 +1,6 @@
 import json
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 from typing import Optional
 
@@ -24,8 +25,6 @@ except Exception as e:
     config = {}
 
 server_port = config.get("server", {}).get("port", 6001)
-
-app = FastAPI()
 
 
 # WebSocket Manager
@@ -151,17 +150,19 @@ for env_name in ["paper", "real"]:
         envs[env_name] = IBKREnvironment(env_name, host, port, client_id, account)
 
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     for env in envs.values():
         asyncio.create_task(env.connect_loop())
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event():
     for env in envs.values():
         if env.ib.isConnected():
             env.ib.disconnect()
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 # REST Endpoints
