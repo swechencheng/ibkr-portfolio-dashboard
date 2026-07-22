@@ -41,7 +41,14 @@ class IbkrPortfolio:
             # We must use the *Async variants so they do not block the active Uvicorn event loop
             self.ib.reqAccountUpdatesAsync("")
             self.ib.reqAccountSummaryAsync()
-            LOGGER.info("Subscribed to IBKR account updates and summary")
+
+            # Fetch open orders and bind to new orders
+            self.ib.reqAllOpenOrders()
+            self.ib.reqAutoOpenOrders(True)
+            # Fetch recent executions
+            self.ib.reqExecutionsAsync()
+
+            LOGGER.info("Subscribed to IBKR account updates, summary, and open orders")
         except Exception as e:
             LOGGER.warning(f"Failed to subscribe to account updates: {e}")
 
