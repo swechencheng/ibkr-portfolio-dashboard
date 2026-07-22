@@ -247,14 +247,24 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'order_update') {
     // Refresh orders and positions when order state changes
-    fetchOrders();
+    if (msg.orders) {
+      state.orders = msg.orders;
+      renderOrders();
+    } else {
+      fetchOrders();
+    }
     fetchPositions();
     fetchSummary();
     state.lastUpdate = new Date();
     updateLastUpdated();
-  } else if (msg.type === 'fill') {
+  } else if (msg.type === 'execution_update' || msg.type === 'fill') {
     // A fill happened — refresh everything
-    fetchExecutions();
+    if (msg.executions) {
+      state.executions = msg.executions;
+      renderExecutions();
+    } else {
+      fetchExecutions();
+    }
     fetchPositions();
     fetchSummary();
     state.lastUpdate = new Date();

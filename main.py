@@ -67,16 +67,46 @@ class IBKREnvironment:
         self.portfolio: Optional[IbkrPortfolio] = None
         self.manager = ConnectionManager()
 
-        self.ib.orderStatusEvent += self.on_order_status
-        self.ib.execDetailsEvent += self.on_exec_details
+        self.ib.openOrderEvent += self.on_order_update
+        self.ib.orderStatusEvent += self.on_order_update
+        self.ib.execDetailsEvent += self.on_exec_update
+        self.ib.commissionReportEvent += self.on_commission_update
         self.ib.updatePortfolioEvent += self.on_update_portfolio
         self.ib.accountValueEvent += self.on_update_account_value
 
-    def on_order_status(self, trade):
-        asyncio.create_task(self.manager.broadcast({"type": "order_update"}))
+    def on_order_update(self, trade):
+        if self.portfolio:
+            try:
+                orders = self.portfolio.get_open_orders()
+                asyncio.create_task(
+                    self.manager.broadcast({"type": "order_update", "orders": orders})
+                )
+            except Exception as e:
+                LOGGER.error(f"[{self.env_name}] Error broadcasting orders: {e}")
 
-    def on_exec_details(self, trade, fill):
-        asyncio.create_task(self.manager.broadcast({"type": "fill"}))
+    def on_exec_update(self, trade, fill):
+        if self.portfolio:
+            try:
+                executions = self.portfolio.get_executions()
+                asyncio.create_task(
+                    self.manager.broadcast(
+                        {"type": "execution_update", "executions": executions}
+                    )
+                )
+            except Exception as e:
+                LOGGER.error(f"[{self.env_name}] Error broadcasting executions: {e}")
+
+    def on_commission_update(self, trade, fill, report):
+        if self.portfolio:
+            try:
+                executions = self.portfolio.get_executions()
+                asyncio.create_task(
+                    self.manager.broadcast(
+                        {"type": "execution_update", "executions": executions}
+                    )
+                )
+            except Exception as e:
+                LOGGER.error(f"[{self.env_name}] Error broadcasting commissions: {e}")
 
     def on_update_portfolio(self, item):
         if self.portfolio:
