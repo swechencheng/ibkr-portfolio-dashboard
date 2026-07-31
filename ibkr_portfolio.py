@@ -38,6 +38,9 @@ class IbkrPortfolio:
         # ib.accountValues() and ib.portfolio() are populated.
         # This is a streaming subscription — data arrives asynchronously.
         try:
+            self.ib.reqMarketDataType(
+                3
+            )  # Use delayed market data if live is not available
             # We must use the *Async variants so they do not block the active Uvicorn event loop
             self.ib.reqAccountUpdatesAsync("")
             self.ib.reqAccountSummaryAsync()
@@ -206,6 +209,32 @@ class IbkrPortfolio:
             cost_basis = abs(position) * avg_price * multiplier
             pnl_pct = (unrealized_pnl / cost_basis * 100) if cost_basis else 0.0
 
+            change_pct = None
+            if contract.secType != "CASH":
+                if not contract.exchange:
+                    contract.exchange = contract.primaryExchange or "SMART"
+
+                ticker = self.ib.ticker(contract)
+                if not ticker:
+                    try:
+                        self.ib.reqMktData(contract, "", False, False)
+                        ticker = self.ib.ticker(contract)
+                    except Exception:
+                        pass
+
+                if (
+                    ticker
+                    and getattr(ticker, "close", None) is not None
+                    and ticker.close == ticker.close
+                    and ticker.close > 0
+                ):
+                    current_price = ticker.marketPrice()
+                    if current_price != current_price or current_price == 0:
+                        current_price = market_price
+
+                    if current_price and current_price > 0:
+                        change_pct = (current_price - ticker.close) / ticker.close * 100
+
             positions.append(
                 {
                     "conId": contract.conId,
@@ -220,6 +249,9 @@ class IbkrPortfolio:
                     "marketValue": round(market_value, 2),
                     "avgCost": round(avg_cost, 2),
                     "avgPrice": round(avg_price, 4),
+                    "changePercent": (
+                        round(change_pct, 2) if change_pct is not None else None
+                    ),
                     "unrealizedPnL": round(unrealized_pnl, 2),
                     "realizedPnL": round(realized_pnl, 2),
                     "pnlPercent": round(pnl_pct, 2),
@@ -287,6 +319,7 @@ class IbkrPortfolio:
                                 "marketValue": round(market_value, 2),
                                 "avgCost": 0.0,
                                 "avgPrice": 0.0,
+                                "changePercent": None,
                                 "unrealizedPnL": 0.0,
                                 "realizedPnL": 0.0,
                                 "pnlPercent": 0.0,

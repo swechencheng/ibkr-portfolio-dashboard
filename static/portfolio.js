@@ -382,7 +382,7 @@ function renderPositions() {
   countBadge.textContent = sorted.length;
 
   if (sorted.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty-state"><div class="empty-icon">📭</div>No positions</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty-state"><div class="empty-icon">📭</div>No positions</td></tr>';
     return;
   }
 
@@ -404,6 +404,7 @@ function renderPositions() {
       <td class="num">${formatNumber(p.marketPrice, 2)}</td>
       <td class="num">${formatNumber(p.avgPrice, 2)}</td>
       <td class="num">${formatCurrency(p.marketValue, 0)}</td>
+      <td class="num ${pnlClass(p.changePercent)}">${formatPercent(p.changePercent)}</td>
       <td class="num ${pnlClass(p.unrealizedPnL)}">${formatPnL(p.unrealizedPnL, 0)}${pnlBar(p.pnlPercent)}</td>
       <td class="num ${pnlClass(p.realizedPnL)}">${formatPnL(p.realizedPnL, 0)}</td>
       <td class="num ${pnlClass(p.pnlPercent)}">${formatPercent(p.pnlPercent)}</td>
