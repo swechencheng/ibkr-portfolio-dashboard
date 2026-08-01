@@ -13,7 +13,7 @@ import uvicorn
 from ib_async import IB, util
 from ibkr_portfolio import IbkrPortfolio
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)
 LOGGER = logging.getLogger("backend")
 
 # Load config
@@ -285,4 +285,6 @@ async def get_real_index():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=server_port, reload=True)
+    uvicorn.run(
+        "main:app", host="0.0.0.0", port=server_port, reload=True, log_level="warning"
+    )
