@@ -309,6 +309,37 @@ class IbkrPortfolio:
 
                     combo_legs.sort(key=lambda x: x.get("strike", 0))
 
+                    combo_prev_close = 0.0
+                    combo_current_price = 0.0
+                    has_prev_close = True
+                    combo_market_price = 0.0
+                    combo_avg_price = 0.0
+                    multiplier_val = combo_legs[0].get("multiplier", 100)
+
+                    for c in combo_legs:
+                        rel_pos = c["position"] / min_abs_pos
+
+                        combo_market_price += (c.get("marketPrice") or 0.0) * rel_pos
+                        combo_avg_price += (c.get("avgPrice") or 0.0) * rel_pos
+
+                        chg_pct = c.get("changePercent")
+                        mkt_px = c.get("marketPrice")
+                        if chg_pct is not None and mkt_px is not None:
+                            prev_close = mkt_px / (1 + chg_pct / 100)
+                            combo_prev_close += prev_close * rel_pos
+                            combo_current_price += mkt_px * rel_pos
+                        else:
+                            has_prev_close = False
+
+                    combo_change_pct = None
+                    if has_prev_close and combo_prev_close != 0:
+                        combo_change_pct = round(
+                            (combo_current_price - combo_prev_close)
+                            / abs(combo_prev_close)
+                            * 100,
+                            2,
+                        )
+
                     local_sym = f"{sym} {name} {exp}"
                     combo = {
                         "conId": "-".join(str(c["conId"]) for c in combo_legs),
@@ -317,14 +348,15 @@ class IbkrPortfolio:
                         "secType": "COMBO",
                         "exchange": combo_legs[0]["exchange"],
                         "currency": combo_legs[0]["currency"],
-                        "multiplier": combo_legs[0]["multiplier"],
+                        "multiplier": multiplier_val,
                         "position": min_abs_pos,
-                        "marketPrice": 0.0,
+                        "marketPrice": round(combo_market_price, 4),
                         "marketValue": sum(c["marketValue"] for c in combo_legs),
                         "avgCost": sum(c["avgCost"] for c in combo_legs),
+                        "avgPrice": round(combo_avg_price, 4),
                         "unrealizedPnL": sum(c["unrealizedPnL"] for c in combo_legs),
                         "realizedPnL": sum(c["realizedPnL"] for c in combo_legs),
-                        "changePercent": None,
+                        "changePercent": combo_change_pct,
                         "pnlPercent": 0.0,
                         "legs": combo_legs,
                     }
