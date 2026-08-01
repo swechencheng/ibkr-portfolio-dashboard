@@ -77,10 +77,19 @@ class IBKREnvironment:
     def on_order_update(self, trade):
         if self.portfolio:
             try:
-                orders = self.portfolio.get_open_orders()
-                asyncio.create_task(
-                    self.manager.broadcast({"type": "order_update", "orders": orders})
-                )
+
+                async def broadcast_orders():
+                    try:
+                        orders = await self.portfolio.get_open_orders_async()
+                        await self.manager.broadcast(
+                            {"type": "order_update", "orders": orders}
+                        )
+                    except Exception as e:
+                        LOGGER.error(
+                            f"[{self.env_name}] Error in broadcast_orders task: {e}"
+                        )
+
+                asyncio.create_task(broadcast_orders())
             except Exception as e:
                 LOGGER.error(f"[{self.env_name}] Error broadcasting orders: {e}")
 
@@ -219,7 +228,7 @@ async def get_positions(env_name: str):
 async def get_orders(env_name: str):
     env = envs.get(env_name)
     if env and env.portfolio and env.ib.isConnected():
-        return {"orders": env.portfolio.get_open_orders()}
+        return {"orders": await env.portfolio.get_open_orders_async()}
     return {"orders": []}
 
 

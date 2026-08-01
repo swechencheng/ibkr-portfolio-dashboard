@@ -33,6 +33,7 @@ class IbkrPortfolio:
         self.account = account
         self._pnl_subscribed = False
         self._pnl_single_subscribed: Dict[int, bool] = {}
+        self._combo_symbol_cache: Dict[tuple, str] = {}
 
         # Subscribe to account and portfolio updates so that
         # ib.accountValues() and ib.portfolio() are populated.
@@ -337,7 +338,7 @@ class IbkrPortfolio:
     # Open orders
     # ------------------------------------------------------------------
 
-    def get_open_orders(self) -> List[Dict[str, Any]]:
+    async def get_open_orders_async(self) -> List[Dict[str, Any]]:
         """
         Return all open/active orders across all contracts.
 
@@ -373,12 +374,51 @@ class IbkrPortfolio:
             parent_id = getattr(order, "parentId", 0)
             oca_group = getattr(order, "ocaGroup", "")
 
+            symbol_resolved = contract.symbol or ""
+            local_symbol_resolved = contract.localSymbol or ""
+
+            if contract.secType == "BAG" and contract.comboLegs:
+                cache_key = tuple(leg.conId for leg in contract.comboLegs)
+                if cache_key in self._combo_symbol_cache:
+                    local_symbol_resolved = self._combo_symbol_cache[cache_key]
+                else:
+                    from ib_async import Contract
+
+                    leg_contracts = [
+                        Contract(conId=leg.conId) for leg in contract.comboLegs
+                    ]
+                    try:
+                        await self.ib.qualifyContractsAsync(*leg_contracts)
+                        desc_parts = []
+                        for leg, c in zip(contract.comboLegs, leg_contracts):
+                            if c.strike:
+                                desc_parts.append(
+                                    f"{leg.action} {leg.ratio}x {c.strike}{c.right}"
+                                )
+                            else:
+                                desc_parts.append(
+                                    f"{leg.action} {leg.ratio}x {c.localSymbol}"
+                                )
+
+                        if desc_parts:
+                            local_symbol_resolved = (
+                                f"{symbol_resolved} (" + ", ".join(desc_parts) + ")"
+                            )
+                            self._combo_symbol_cache[cache_key] = local_symbol_resolved
+                        else:
+                            local_symbol_resolved = f"{symbol_resolved} COMBO"
+                    except Exception as e:
+                        LOGGER.warning(
+                            f"Failed to qualify combo legs for {symbol_resolved}: {e}"
+                        )
+                        local_symbol_resolved = f"{symbol_resolved} COMBO"
+
             orders.append(
                 {
                     "orderId": order.orderId,
                     "permId": order.permId,
-                    "symbol": contract.symbol or "",
-                    "localSymbol": contract.localSymbol or "",
+                    "symbol": symbol_resolved,
+                    "localSymbol": local_symbol_resolved,
                     "secType": contract.secType or "",
                     "action": order.action,
                     "orderType": order.orderType,
