@@ -592,9 +592,43 @@
     }
 
     .empty-state .empty-icon {
-      font-size: 28px;
-      margin-bottom: 10px;
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
       opacity: 0.3;
+    }
+
+    .leg-row {
+      display: none;
+      background: var(--surface-low);
+      font-size: 0.9em;
+    }
+
+    .leg-row.expanded {
+      display: table-row;
+    }
+
+    .leg-row td:first-child {
+      padding-left: 2rem;
+      border-left: 3px solid var(--accent);
+    }
+
+    .combo-row {
+      cursor: pointer;
+    }
+
+    .combo-row:hover {
+      background: var(--surface-high);
+    }
+
+    .combo-row .combo-icon {
+      display: inline-block;
+      width: 1.2rem;
+      transition: transform 0.2s;
+      color: var(--text-dim);
+    }
+
+    .combo-row.expanded .combo-icon {
+      transform: rotate(90deg);
     }
 
     /* ── Two-column layout for bottom sections ─────────────────── */

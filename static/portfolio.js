@@ -386,7 +386,15 @@ function renderPositions() {
     return;
   }
 
-  tbody.innerHTML = sorted.map(p => {
+  window.toggleCombo = function (comboId) {
+    const parentRow = document.getElementById(`combo-${comboId}`);
+    if (parentRow) parentRow.classList.toggle('expanded');
+
+    const childRows = document.querySelectorAll(`.leg-${comboId}`);
+    childRows.forEach(row => row.classList.toggle('expanded'));
+  };
+
+  tbody.innerHTML = sorted.map((p, idx) => {
     const symbol = p.localSymbol || p.symbol;
     const prevPnL = state.previousPnL[symbol];
     let flashClass = '';
@@ -396,12 +404,19 @@ function renderPositions() {
     state.previousPnL[symbol] = p.unrealizedPnL;
 
     const posClass = p.position > 0 ? 'positive' : p.position < 0 ? 'negative' : '';
+    const isCombo = p.secType === 'COMBO';
+    const hasLegs = isCombo && p.legs && p.legs.length > 0;
+    const comboId = `pos-${idx}`;
 
-    return `<tr class="${flashClass}">
-      <td><strong>${symbol}</strong></td>
+    let trHtml = `<tr id="combo-${comboId}" class="${flashClass} ${isCombo ? 'combo-row' : ''}" ${isCombo ? `onclick="toggleCombo('${comboId}')"` : ''}>
+      <td>
+        <strong>
+          ${isCombo ? '<span class="combo-icon">▶</span> ' : ''}${symbol}
+        </strong>
+      </td>
       <td class="mono" style="color:var(--text-dim)">${p.secType}</td>
       <td class="num ${posClass}">${formatNumber(p.position, 0)}</td>
-      <td class="num">${formatNumber(p.marketPrice, 2)}</td>
+      <td class="num">${p.marketPrice ? formatNumber(p.marketPrice, 2) : '—'}</td>
       <td class="num">${formatNumber(p.avgPrice, 2)}</td>
       <td class="num">${formatCurrency(p.marketValue, 0)}</td>
       <td class="num ${pnlClass(p.changePercent)}">${formatPercent(p.changePercent)}</td>
@@ -409,6 +424,28 @@ function renderPositions() {
       <td class="num ${pnlClass(p.realizedPnL)}">${formatPnL(p.realizedPnL, 0)}</td>
       <td class="num ${pnlClass(p.pnlPercent)}">${formatPercent(p.pnlPercent)}</td>
     </tr>`;
+
+    if (hasLegs) {
+      const legsHtml = p.legs.map(leg => {
+        const legSymbol = leg.localSymbol || leg.symbol;
+        const legPosClass = leg.position > 0 ? 'positive' : leg.position < 0 ? 'negative' : '';
+        return `<tr class="leg-row leg-${comboId}">
+          <td>${legSymbol}</td>
+          <td class="mono" style="color:var(--text-dim)">${leg.secType}</td>
+          <td class="num ${legPosClass}">${formatNumber(leg.position, 0)}</td>
+          <td class="num">${formatNumber(leg.marketPrice, 2)}</td>
+          <td class="num">${formatNumber(leg.avgPrice, 2)}</td>
+          <td class="num">${formatCurrency(leg.marketValue, 0)}</td>
+          <td class="num ${pnlClass(leg.changePercent)}">${formatPercent(leg.changePercent)}</td>
+          <td class="num ${pnlClass(leg.unrealizedPnL)}">${formatPnL(leg.unrealizedPnL, 0)}</td>
+          <td class="num ${pnlClass(leg.realizedPnL)}">${formatPnL(leg.realizedPnL, 0)}</td>
+          <td class="num ${pnlClass(leg.pnlPercent)}">${formatPercent(leg.pnlPercent)}</td>
+        </tr>`;
+      }).join('');
+      trHtml += legsHtml;
+    }
+
+    return trHtml;
   }).join('');
 }
 

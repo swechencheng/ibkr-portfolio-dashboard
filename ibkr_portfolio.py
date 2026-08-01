@@ -171,6 +171,178 @@ class IbkrPortfolio:
     # Portfolio positions
     # ------------------------------------------------------------------
 
+    def _group_option_strategies(
+        self, positions: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        import collections
+
+        options = [p for p in positions if p.get("secType") in ("OPT", "FOP")]
+        others = [p for p in positions if p.get("secType") not in ("OPT", "FOP")]
+
+        groups = collections.defaultdict(list)
+        for o in options:
+            sym = o.get("symbol", "")
+            exp = o.get("expiry", "")
+            groups[(sym, exp)].append(o)
+
+        final_positions = others
+
+        for (sym, exp), legs in groups.items():
+            legs = [l for l in legs if l["position"] != 0]
+
+            while len(legs) > 1:
+                legs.sort(key=lambda x: x.get("strike", 0))
+                matched = False
+                match_indices = []
+                name = ""
+
+                # 1. Iron Condor
+                lp = sp = sc = lc = -1
+                for i, l in enumerate(legs):
+                    if l["right"] == "P" and l["position"] > 0 and lp == -1:
+                        lp = i
+                    elif l["right"] == "P" and l["position"] < 0 and sp == -1:
+                        sp = i
+                    elif l["right"] == "C" and l["position"] < 0 and sc == -1:
+                        sc = i
+                    elif l["right"] == "C" and l["position"] > 0 and lc == -1:
+                        lc = i
+
+                if lp != -1 and sp != -1 and sc != -1 and lc != -1:
+                    if (
+                        legs[lp]["strike"]
+                        <= legs[sp]["strike"]
+                        <= legs[sc]["strike"]
+                        <= legs[lc]["strike"]
+                    ):
+                        match_indices = [lp, sp, sc, lc]
+                        name = (
+                            "Iron Butterfly"
+                            if legs[sp]["strike"] == legs[sc]["strike"]
+                            else "Iron Condor"
+                        )
+
+                # 2. Straddle / Strangle
+                if not match_indices:
+                    lc = sc = lp = sp = -1
+                    for i, l in enumerate(legs):
+                        if l["right"] == "C" and l["position"] > 0 and lc == -1:
+                            lc = i
+                        elif l["right"] == "P" and l["position"] > 0 and lp == -1:
+                            lp = i
+                        elif l["right"] == "C" and l["position"] < 0 and sc == -1:
+                            sc = i
+                        elif l["right"] == "P" and l["position"] < 0 and sp == -1:
+                            sp = i
+
+                    if lc != -1 and lp != -1:
+                        match_indices = [lc, lp]
+                        name = (
+                            "Straddle"
+                            if legs[lc]["strike"] == legs[lp]["strike"]
+                            else "Strangle"
+                        )
+                    elif sc != -1 and sp != -1:
+                        match_indices = [sc, sp]
+                        name = (
+                            "Short Straddle"
+                            if legs[sc]["strike"] == legs[sp]["strike"]
+                            else "Short Strangle"
+                        )
+
+                # 3. Vertical Spreads
+                if not match_indices:
+                    lc = sc = lp = sp = -1
+                    for i, l in enumerate(legs):
+                        if l["right"] == "C" and l["position"] > 0 and lc == -1:
+                            lc = i
+                        elif l["right"] == "C" and l["position"] < 0 and sc == -1:
+                            sc = i
+                    if lc != -1 and sc != -1:
+                        match_indices = [lc, sc]
+                        name = (
+                            "Bull Call Spread"
+                            if legs[lc]["strike"] < legs[sc]["strike"]
+                            else "Bear Call Spread"
+                        )
+                    else:
+                        for i, l in enumerate(legs):
+                            if l["right"] == "P" and l["position"] > 0 and lp == -1:
+                                lp = i
+                            elif l["right"] == "P" and l["position"] < 0 and sp == -1:
+                                sp = i
+                        if lp != -1 and sp != -1:
+                            match_indices = [lp, sp]
+                            name = (
+                                "Bull Put Spread"
+                                if legs[lp]["strike"] < legs[sp]["strike"]
+                                else "Bear Put Spread"
+                            )
+
+                if match_indices:
+                    extracted = [legs[i] for i in match_indices]
+                    min_abs_pos = min(abs(e["position"]) for e in extracted)
+
+                    combo_legs = []
+                    for i in sorted(match_indices, reverse=True):
+                        orig = legs.pop(i)
+                        sign = 1 if orig["position"] > 0 else -1
+                        ratio = min_abs_pos / abs(orig["position"])
+
+                        leg = dict(orig)
+                        leg["position"] = min_abs_pos * sign
+                        leg["marketValue"] = orig["marketValue"] * ratio
+                        leg["avgCost"] = orig["avgCost"] * ratio
+                        leg["unrealizedPnL"] = orig["unrealizedPnL"] * ratio
+                        leg["realizedPnL"] = orig["realizedPnL"] * ratio
+                        combo_legs.append(leg)
+
+                        if abs(orig["position"]) > min_abs_pos:
+                            rem = dict(orig)
+                            rem["position"] = orig["position"] - (min_abs_pos * sign)
+                            rem_ratio = abs(rem["position"]) / abs(orig["position"])
+                            rem["marketValue"] = orig["marketValue"] * rem_ratio
+                            rem["avgCost"] = orig["avgCost"] * rem_ratio
+                            rem["unrealizedPnL"] = orig["unrealizedPnL"] * rem_ratio
+                            rem["realizedPnL"] = orig["realizedPnL"] * rem_ratio
+                            legs.append(rem)
+
+                    combo_legs.sort(key=lambda x: x.get("strike", 0))
+
+                    local_sym = f"{sym} {name} {exp}"
+                    combo = {
+                        "conId": "-".join(str(c["conId"]) for c in combo_legs),
+                        "symbol": sym,
+                        "localSymbol": local_sym,
+                        "secType": "COMBO",
+                        "exchange": combo_legs[0]["exchange"],
+                        "currency": combo_legs[0]["currency"],
+                        "multiplier": combo_legs[0]["multiplier"],
+                        "position": min_abs_pos,
+                        "marketPrice": 0.0,
+                        "marketValue": sum(c["marketValue"] for c in combo_legs),
+                        "avgCost": sum(c["avgCost"] for c in combo_legs),
+                        "unrealizedPnL": sum(c["unrealizedPnL"] for c in combo_legs),
+                        "realizedPnL": sum(c["realizedPnL"] for c in combo_legs),
+                        "changePercent": None,
+                        "pnlPercent": 0.0,
+                        "legs": combo_legs,
+                    }
+                    if combo["avgCost"] != 0:
+                        combo["pnlPercent"] = (
+                            combo["unrealizedPnL"] / abs(combo["avgCost"]) * 100
+                        )
+
+                    final_positions.append(combo)
+                    matched = True
+
+                if not matched:
+                    break
+
+            final_positions.extend(legs)
+
+        return final_positions
+
     def get_portfolio_positions(self) -> List[Dict[str, Any]]:
         """
         Return all portfolio positions with market values and P&L.
@@ -236,29 +408,37 @@ class IbkrPortfolio:
                     if current_price and current_price > 0:
                         change_pct = (current_price - ticker.close) / ticker.close * 100
 
-            positions.append(
-                {
-                    "conId": contract.conId,
-                    "symbol": contract.symbol or "",
-                    "localSymbol": contract.localSymbol or "",
-                    "secType": contract.secType or "",
-                    "exchange": contract.exchange or "",
-                    "currency": contract.currency or "",
-                    "multiplier": multiplier,
-                    "position": position,
-                    "marketPrice": round(market_price, 4),
-                    "marketValue": round(market_value, 2),
-                    "avgCost": round(avg_cost, 2),
-                    "avgPrice": round(avg_price, 4),
-                    "changePercent": (
-                        round(change_pct, 2) if change_pct is not None else None
-                    ),
-                    "unrealizedPnL": round(unrealized_pnl, 2),
-                    "realizedPnL": round(realized_pnl, 2),
-                    "pnlPercent": round(pnl_pct, 2),
-                    "account": item.account or "",
-                }
-            )
+            pos_dict = {
+                "conId": contract.conId,
+                "symbol": contract.symbol or "",
+                "localSymbol": contract.localSymbol or "",
+                "secType": contract.secType or "",
+                "exchange": contract.exchange or "",
+                "currency": contract.currency or "",
+                "multiplier": multiplier,
+                "position": position,
+                "marketPrice": round(market_price, 4),
+                "marketValue": round(market_value, 2),
+                "avgCost": round(avg_cost, 2),
+                "avgPrice": round(avg_price, 4),
+                "changePercent": (
+                    round(change_pct, 2) if change_pct is not None else None
+                ),
+                "unrealizedPnL": round(unrealized_pnl, 2),
+                "realizedPnL": round(realized_pnl, 2),
+                "pnlPercent": round(pnl_pct, 2),
+                "account": item.account or "",
+            }
+
+            if contract.secType == "OPT" or contract.secType == "FOP":
+                pos_dict["strike"] = contract.strike
+                pos_dict["right"] = contract.right
+                pos_dict["expiry"] = contract.lastTradeDateOrContractMonth
+
+            positions.append(pos_dict)
+
+        # Apply grouping logic
+        positions = self._group_option_strategies(positions)
 
         # Also include Cash balances as positions (like IBKR TWS)
         account_values = list(self.ib.wrapper.accountValues.values())
