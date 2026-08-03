@@ -38,19 +38,28 @@ class IbkrPortfolio:
         # Subscribe to account and portfolio updates so that
         # ib.accountValues() and ib.portfolio() are populated.
         # This is a streaming subscription — data arrives asynchronously.
+        import asyncio
+
+        asyncio.create_task(self._subscribe_async())
+
+    async def _subscribe_async(self):
         try:
             self.ib.reqMarketDataType(
                 3
             )  # Use delayed market data if live is not available
-            # We must use the *Async variants so they do not block the active Uvicorn event loop
-            self.ib.reqAccountUpdatesAsync("")
-            self.ib.reqAccountSummaryAsync()
+
+            # Await the async variants so they do not block the active Uvicorn event loop
+            await self.ib.reqAccountUpdatesAsync(self.account or "")
+
+            # Await the async variants so they do not block the active Uvicorn event loop
+            await self.ib.reqAccountSummaryAsync()
 
             # Fetch open orders and bind to new orders
-            self.ib.reqAllOpenOrders()
+            await self.ib.reqAllOpenOrdersAsync()
             self.ib.reqAutoOpenOrders(True)
+
             # Fetch recent executions
-            self.ib.reqExecutionsAsync()
+            await self.ib.reqExecutionsAsync()
 
             LOGGER.info("Subscribed to IBKR account updates, summary, and open orders")
         except Exception as e:
