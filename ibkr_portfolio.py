@@ -559,6 +559,51 @@ class IbkrPortfolio:
     # Open orders
     # ------------------------------------------------------------------
 
+    async def _resolve_contract_symbol_async(self, contract) -> tuple[str, str]:
+        symbol_resolved = contract.symbol or ""
+        local_symbol_resolved = contract.localSymbol or ""
+
+        if contract.secType == "BAG" and contract.comboLegs:
+            cache_key = tuple(leg.conId for leg in contract.comboLegs)
+            if cache_key in self._combo_symbol_cache:
+                local_symbol_resolved = self._combo_symbol_cache[cache_key]
+            else:
+                from ib_async import Contract
+
+                leg_contracts = [
+                    Contract(conId=leg.conId) for leg in contract.comboLegs
+                ]
+                try:
+                    await self.ib.qualifyContractsAsync(*leg_contracts)
+                    desc_parts = []
+                    for leg, c in zip(contract.comboLegs, leg_contracts):
+                        if c.strike:
+                            desc_parts.append(
+                                f"{leg.action} {leg.ratio}x {c.strike}{c.right}"
+                            )
+                        else:
+                            desc_parts.append(
+                                f"{leg.action} {leg.ratio}x {c.localSymbol}"
+                            )
+
+                    if desc_parts:
+                        local_symbol_resolved = (
+                            f"{symbol_resolved} (" + ", ".join(desc_parts) + ")"
+                        )
+                        self._combo_symbol_cache[cache_key] = local_symbol_resolved
+                    else:
+                        local_symbol_resolved = f"{symbol_resolved} COMBO"
+                except Exception as e:
+                    import logging
+
+                    LOGGER = logging.getLogger("ibkr_portfolio")
+                    LOGGER.warning(
+                        f"Failed to qualify combo legs for {symbol_resolved}: {e}"
+                    )
+                    local_symbol_resolved = f"{symbol_resolved} COMBO"
+
+        return symbol_resolved, local_symbol_resolved
+
     async def get_open_orders_async(self) -> List[Dict[str, Any]]:
         """
         Return all open/active orders across all contracts.
@@ -595,44 +640,9 @@ class IbkrPortfolio:
             parent_id = getattr(order, "parentId", 0)
             oca_group = getattr(order, "ocaGroup", "")
 
-            symbol_resolved = contract.symbol or ""
-            local_symbol_resolved = contract.localSymbol or ""
-
-            if contract.secType == "BAG" and contract.comboLegs:
-                cache_key = tuple(leg.conId for leg in contract.comboLegs)
-                if cache_key in self._combo_symbol_cache:
-                    local_symbol_resolved = self._combo_symbol_cache[cache_key]
-                else:
-                    from ib_async import Contract
-
-                    leg_contracts = [
-                        Contract(conId=leg.conId) for leg in contract.comboLegs
-                    ]
-                    try:
-                        await self.ib.qualifyContractsAsync(*leg_contracts)
-                        desc_parts = []
-                        for leg, c in zip(contract.comboLegs, leg_contracts):
-                            if c.strike:
-                                desc_parts.append(
-                                    f"{leg.action} {leg.ratio}x {c.strike}{c.right}"
-                                )
-                            else:
-                                desc_parts.append(
-                                    f"{leg.action} {leg.ratio}x {c.localSymbol}"
-                                )
-
-                        if desc_parts:
-                            local_symbol_resolved = (
-                                f"{symbol_resolved} (" + ", ".join(desc_parts) + ")"
-                            )
-                            self._combo_symbol_cache[cache_key] = local_symbol_resolved
-                        else:
-                            local_symbol_resolved = f"{symbol_resolved} COMBO"
-                    except Exception as e:
-                        LOGGER.warning(
-                            f"Failed to qualify combo legs for {symbol_resolved}: {e}"
-                        )
-                        local_symbol_resolved = f"{symbol_resolved} COMBO"
+            symbol_resolved, local_symbol_resolved = (
+                await self._resolve_contract_symbol_async(contract)
+            )
 
             orders.append(
                 {
@@ -666,7 +676,7 @@ class IbkrPortfolio:
     # Executions / fills
     # ------------------------------------------------------------------
 
-    def get_executions(self) -> List[Dict[str, Any]]:
+    async def get_executions_async(self) -> List[Dict[str, Any]]:
         """
         Return recent executions from the current IBKR session.
 
@@ -684,11 +694,15 @@ class IbkrPortfolio:
             contract = fill.contract
             comm = fill.commissionReport
 
+            symbol_resolved, local_symbol_resolved = (
+                await self._resolve_contract_symbol_async(contract)
+            )
+
             executions.append(
                 {
                     "execId": exec_.execId,
-                    "symbol": contract.symbol or "",
-                    "localSymbol": contract.localSymbol or "",
+                    "symbol": symbol_resolved,
+                    "localSymbol": local_symbol_resolved,
                     "secType": contract.secType or "",
                     "side": exec_.side,  # "BOT" or "SLD"
                     "quantity": int(exec_.shares),

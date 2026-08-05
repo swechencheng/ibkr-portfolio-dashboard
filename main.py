@@ -96,24 +96,38 @@ class IBKREnvironment:
     def on_exec_update(self, trade, fill):
         if self.portfolio:
             try:
-                executions = self.portfolio.get_executions()
-                asyncio.create_task(
-                    self.manager.broadcast(
-                        {"type": "execution_update", "executions": executions}
-                    )
-                )
+
+                async def broadcast_executions():
+                    try:
+                        executions = await self.portfolio.get_executions_async()
+                        await self.manager.broadcast(
+                            {"type": "execution_update", "executions": executions}
+                        )
+                    except Exception as e:
+                        LOGGER.error(
+                            f"[{self.env_name}] Error in broadcast_executions task: {e}"
+                        )
+
+                asyncio.create_task(broadcast_executions())
             except Exception as e:
                 LOGGER.error(f"[{self.env_name}] Error broadcasting executions: {e}")
 
     def on_commission_update(self, trade, fill, report):
         if self.portfolio:
             try:
-                executions = self.portfolio.get_executions()
-                asyncio.create_task(
-                    self.manager.broadcast(
-                        {"type": "execution_update", "executions": executions}
-                    )
-                )
+
+                async def broadcast_commissions():
+                    try:
+                        executions = await self.portfolio.get_executions_async()
+                        await self.manager.broadcast(
+                            {"type": "execution_update", "executions": executions}
+                        )
+                    except Exception as e:
+                        LOGGER.error(
+                            f"[{self.env_name}] Error in broadcast_commissions task: {e}"
+                        )
+
+                asyncio.create_task(broadcast_commissions())
             except Exception as e:
                 LOGGER.error(f"[{self.env_name}] Error broadcasting commissions: {e}")
 
@@ -236,7 +250,7 @@ async def get_orders(env_name: str):
 async def get_executions(env_name: str):
     env = envs.get(env_name)
     if env and env.portfolio and env.ib.isConnected():
-        return {"executions": env.portfolio.get_executions()}
+        return {"executions": await env.portfolio.get_executions_async()}
     return {"executions": []}
 
 
