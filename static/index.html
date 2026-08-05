@@ -749,20 +749,20 @@
           <thead>
             <tr>
               <th data-sort="symbol">Symbol</th>
-              <th data-sort="secType">Type</th>
-              <th data-sort="position" class="align-right">Position</th>
+              <th data-sort="changePercent" class="align-right">Change %</th>
+              <th data-sort="pnlPercent" class="align-right">P&L %</th>
               <th data-sort="marketPrice" class="align-right">Mkt Price</th>
               <th data-sort="avgPrice" class="align-right">Avg Price</th>
+              <th data-sort="position" class="align-right">Position</th>
               <th data-sort="marketValue" class="align-right">Mkt Value</th>
-              <th data-sort="changePercent" class="align-right">Change %</th>
               <th data-sort="unrealizedPnL" class="align-right">Unrealized P&L</th>
               <th data-sort="realizedPnL" class="align-right">Realized P&L</th>
-              <th data-sort="pnlPercent" class="align-right">P&L %</th>
+              <th data-sort="secType">Type</th>
             </tr>
           </thead>
           <tbody id="positionsBody">
             <tr>
-              <td colspan="10" class="empty-state">
+              <td colspan="9" class="empty-state">
                 <div class="empty-icon">📭</div>No positions
               </td>
             </tr>
@@ -784,10 +784,10 @@
           <thead>
             <tr>
               <th data-sort="symbol">Symbol</th>
+              <th data-sort="price" class="align-right">Price</th>
+              <th data-sort="totalQuantity" class="align-right">Qty</th>
               <th data-sort="action">Side</th>
               <th data-sort="orderType">Type</th>
-              <th data-sort="totalQuantity" class="align-right">Qty</th>
-              <th data-sort="price" class="align-right">Price</th>
               <th data-sort="status">Status</th>
               <th>Action</th>
             </tr>
@@ -817,11 +817,11 @@
             <tr>
               <th data-sort="time">Time</th>
               <th data-sort="symbol">Symbol</th>
-              <th data-sort="side">Side</th>
-              <th data-sort="quantity" class="align-right">Qty</th>
-              <th data-sort="price" class="align-right">Price</th>
-              <th data-sort="commission" class="align-right">Comm</th>
               <th data-sort="realizedPnL" class="align-right">Realized P&L</th>
+              <th data-sort="commission" class="align-right">Comm</th>
+              <th data-sort="price" class="align-right">Price</th>
+              <th data-sort="quantity" class="align-right">Qty</th>
+              <th data-sort="side">Side</th>
             </tr>
           </thead>
           <tbody id="executionsBody">

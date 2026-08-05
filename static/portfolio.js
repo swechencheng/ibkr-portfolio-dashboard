@@ -423,15 +423,15 @@ function renderPositions() {
           ${isCombo ? '<span class="combo-icon">▶</span> ' : ''}${symbol}
         </strong>
       </td>
-      <td class="mono" style="color:var(--text-dim)">${p.secType}</td>
-      <td class="num ${posClass}">${formatNumber(p.position, 0)}</td>
+      <td class="num ${pnlClass(p.changePercent)}">${formatPercent(p.changePercent)}</td>
+      <td class="num ${pnlClass(p.pnlPercent)}">${formatPercent(p.pnlPercent)}</td>
       <td class="num">${p.marketPrice ? formatNumber(p.marketPrice, 2) : '—'}</td>
       <td class="num">${formatNumber(p.avgPrice, 2)}</td>
+      <td class="num ${posClass}">${formatNumber(p.position, 0)}</td>
       <td class="num">${formatCurrency(p.marketValue, 0)}</td>
-      <td class="num ${pnlClass(p.changePercent)}">${formatPercent(p.changePercent)}</td>
       <td class="num ${pnlClass(p.unrealizedPnL)}">${formatPnL(p.unrealizedPnL, 0)}${pnlBar(p.pnlPercent)}</td>
       <td class="num ${pnlClass(p.realizedPnL)}">${formatPnL(p.realizedPnL, 0)}</td>
-      <td class="num ${pnlClass(p.pnlPercent)}">${formatPercent(p.pnlPercent)}</td>
+      <td class="mono" style="color:var(--text-dim)">${p.secType}</td>
     </tr>`;
 
     if (hasLegs) {
@@ -440,15 +440,14 @@ function renderPositions() {
         const legPosClass = leg.position > 0 ? 'positive' : leg.position < 0 ? 'negative' : '';
         return `<tr class="leg-row leg-${comboId} ${expandedClass}">
           <td>${legSymbol}</td>
-          <td class="mono" style="color:var(--text-dim)">${leg.secType}</td>
-          <td class="num ${legPosClass}">${formatNumber(leg.position, 0)}</td>
+          <td class="num ${pnlClass(leg.changePercent)}">${formatPercent(leg.changePercent)}</td>
+          <td class="num ${pnlClass(leg.pnlPercent)}">${formatPercent(leg.pnlPercent)}</td>
           <td class="num">${formatNumber(leg.marketPrice, 2)}</td>
           <td class="num">${formatNumber(leg.avgPrice, 2)}</td>
+          <td class="num ${legPosClass}">${formatNumber(leg.position, 0)}</td>
           <td class="num">${formatCurrency(leg.marketValue, 0)}</td>
-          <td class="num ${pnlClass(leg.changePercent)}">${formatPercent(leg.changePercent)}</td>
           <td class="num ${pnlClass(leg.unrealizedPnL)}">${formatPnL(leg.unrealizedPnL, 0)}</td>
           <td class="num ${pnlClass(leg.realizedPnL)}">${formatPnL(leg.realizedPnL, 0)}</td>
-          <td class="num ${pnlClass(leg.pnlPercent)}">${formatPercent(leg.pnlPercent)}</td>
         </tr>`;
       }).join('');
       trHtml += legsHtml;
@@ -477,10 +476,10 @@ function renderOrders() {
 
     return `<tr>
       <td><strong>${symbol}</strong></td>
+      <td class="num">${priceStr}</td>
+      <td class="num">${o.totalQuantity}</td>
       <td>${actionTag(o.action)}</td>
       <td>${orderTypeTag(o.orderType)}</td>
-      <td class="num">${o.totalQuantity}</td>
-      <td class="num">${priceStr}</td>
       <td>${statusTag(o.status)}</td>
       <td>${canCancel ? `<button class="cancel-btn" onclick="cancelOrder(${o.orderId})">Cancel</button>` : ''}</td>
     </tr>`;
@@ -503,11 +502,11 @@ function renderExecutions() {
     return `<tr>
       <td class="mono" style="color:var(--text-dim)">${formatTime(e.time)}</td>
       <td><strong>${e.localSymbol || e.symbol}</strong></td>
-      <td>${actionTag(e.side)}</td>
-      <td class="num">${e.quantity}</td>
-      <td class="num">${formatNumber(e.price, 2)}</td>
+      <td class="num ${pnlClass(e.realizedPnL)}">${e.realizedPnL != null ? formatPnL(e.realizedPnL, 2) : '—'}</td>
       <td class="num" style="color:var(--text-dim)">${e.commission ? formatNumber(e.commission, 2) : '—'}</td>
-      <td class="num ${pnlClass(e.realizedPnL)}">${e.realizedPnL != null ? formatPnL(e.realizedPnL, 0) : '—'}</td>
+      <td class="num">${formatNumber(e.price, 2)}</td>
+      <td class="num">${e.quantity}</td>
+      <td>${actionTag(e.side)}</td>
     </tr>`;
   }).join('');
 }
