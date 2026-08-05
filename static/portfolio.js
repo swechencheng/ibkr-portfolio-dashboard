@@ -25,6 +25,7 @@ const state = {
     executions: { key: 'time', dir: 'desc' },
   },
   previousPnL: {}, // Track previous P&L values for flash animation
+  expandedCombos: new Set(),
 };
 
 const pathname = window.location.pathname; // e.g. "/paper" or "/real"
@@ -387,11 +388,17 @@ function renderPositions() {
   }
 
   window.toggleCombo = function (comboId) {
+    if (state.expandedCombos.has(comboId)) {
+      state.expandedCombos.delete(comboId);
+    } else {
+      state.expandedCombos.add(comboId);
+    }
+
     const parentRow = document.getElementById(`combo-${comboId}`);
-    if (parentRow) parentRow.classList.toggle('expanded');
+    if (parentRow) parentRow.classList.toggle('expanded', state.expandedCombos.has(comboId));
 
     const childRows = document.querySelectorAll(`.leg-${comboId}`);
-    childRows.forEach(row => row.classList.toggle('expanded'));
+    childRows.forEach(row => row.classList.toggle('expanded', state.expandedCombos.has(comboId)));
   };
 
   tbody.innerHTML = sorted.map((p, idx) => {
@@ -406,9 +413,11 @@ function renderPositions() {
     const posClass = p.position > 0 ? 'positive' : p.position < 0 ? 'negative' : '';
     const isCombo = p.secType === 'COMBO';
     const hasLegs = isCombo && p.legs && p.legs.length > 0;
-    const comboId = `pos-${idx}`;
+    const comboId = 'combo-' + symbol.replace(/[^a-zA-Z0-9]/g, '-');
+    const isExpanded = state.expandedCombos.has(comboId);
+    const expandedClass = isExpanded ? 'expanded' : '';
 
-    let trHtml = `<tr id="combo-${comboId}" class="${flashClass} ${isCombo ? 'combo-row' : ''}" ${isCombo ? `onclick="toggleCombo('${comboId}')"` : ''}>
+    let trHtml = `<tr id="combo-${comboId}" class="${flashClass} ${isCombo ? 'combo-row' : ''} ${expandedClass}" ${isCombo ? `onclick="toggleCombo('${comboId}')"` : ''}>
       <td>
         <strong>
           ${isCombo ? '<span class="combo-icon">▶</span> ' : ''}${symbol}
@@ -429,7 +438,7 @@ function renderPositions() {
       const legsHtml = p.legs.map(leg => {
         const legSymbol = leg.localSymbol || leg.symbol;
         const legPosClass = leg.position > 0 ? 'positive' : leg.position < 0 ? 'negative' : '';
-        return `<tr class="leg-row leg-${comboId}">
+        return `<tr class="leg-row leg-${comboId} ${expandedClass}">
           <td>${legSymbol}</td>
           <td class="mono" style="color:var(--text-dim)">${leg.secType}</td>
           <td class="num ${legPosClass}">${formatNumber(leg.position, 0)}</td>
