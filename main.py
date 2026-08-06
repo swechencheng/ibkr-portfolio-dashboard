@@ -73,6 +73,7 @@ class IBKREnvironment:
         self.ib.commissionReportEvent += self.on_commission_update
         self.ib.updatePortfolioEvent += self.on_update_portfolio
         self.ib.accountValueEvent += self.on_update_account_value
+        self.ib.errorEvent += self.on_error
 
     def on_order_update(self, trade):
         if self.portfolio:
@@ -147,6 +148,13 @@ class IBKREnvironment:
                 )
             except Exception as e:
                 LOGGER.error(f"[{self.env_name}] Error handling portfolio update: {e}")
+
+    def on_error(self, reqId, errorCode, errorString):
+        if errorCode == 1102 and self.portfolio:
+            LOGGER.info(
+                f"[{self.env_name}] Connection restored (1102). Refreshing all portfolio data..."
+            )
+            asyncio.create_task(self.portfolio._subscribe_async())
 
     def on_update_account_value(self, value):
         if self.portfolio:
