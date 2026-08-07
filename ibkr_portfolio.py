@@ -41,6 +41,18 @@ class IbkrPortfolio:
         import asyncio
 
         asyncio.create_task(self._subscribe_async())
+        asyncio.create_task(self._poll_executions())
+
+    async def _poll_executions(self):
+        import asyncio
+
+        while True:
+            await asyncio.sleep(5)
+            try:
+                if self.ib.isConnected():
+                    await self.ib.reqExecutionsAsync()
+            except Exception as e:
+                LOGGER.warning(f"Failed to poll executions: {e}")
 
     async def _subscribe_async(self):
         try:
