@@ -2,6 +2,8 @@
 
 A lightweight, real-time, custom-built web dashboard for monitoring Interactive Brokers (IBKR) portfolios. This project interfaces directly with an active IBKR Gateway or TWS instance using `ib_async` and serves a clean, live-updating UI via FastAPI and WebSockets.
 
+![IBKR Portfolio Dashboard Screenshot](sample_page.png)
+
 ## 🚀 Why Re-Invent the Wheel?
 
 You might wonder: _Why build a custom dashboard when IBKR provides the Mobile App, Web Portal, and TWS?_
