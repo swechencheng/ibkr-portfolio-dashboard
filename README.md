@@ -68,3 +68,7 @@ Once the server is running, simply navigate to:
 - **Real Account**: `http://localhost:6001/real`
 
 The dashboard will automatically connect, subscribe to live market data, and stream updates directly to your screen.
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
