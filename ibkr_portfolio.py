@@ -335,6 +335,8 @@ class IbkrPortfolio:
                     has_prev_close = True
                     combo_market_price = 0.0
                     combo_avg_price = 0.0
+                    combo_delta = 0.0
+                    has_delta = False
                     multiplier_val = combo_legs[0].get("multiplier", 100)
 
                     for c in combo_legs:
@@ -342,6 +344,11 @@ class IbkrPortfolio:
 
                         combo_market_price += (c.get("marketPrice") or 0.0) * rel_pos
                         combo_avg_price += (c.get("avgPrice") or 0.0) * rel_pos
+
+                        leg_delta = c.get("delta")
+                        if leg_delta is not None:
+                            has_delta = True
+                            combo_delta += leg_delta * rel_pos
 
                         chg_pct = c.get("changePercent")
                         mkt_px = c.get("marketPrice")
@@ -379,6 +386,7 @@ class IbkrPortfolio:
                         "realizedPnL": sum(c["realizedPnL"] for c in combo_legs),
                         "changePercent": combo_change_pct,
                         "pnlPercent": 0.0,
+                        "delta": round(combo_delta, 3) if has_delta else None,
                         "legs": combo_legs,
                     }
                     if combo["avgCost"] != 0:
@@ -436,6 +444,7 @@ class IbkrPortfolio:
             pnl_pct = (unrealized_pnl / cost_basis * 100) if cost_basis else 0.0
 
             change_pct = None
+            delta = None
             if contract.secType != "CASH":
                 if not contract.exchange:
                     contract.exchange = contract.primaryExchange or "SMART"
@@ -443,10 +452,20 @@ class IbkrPortfolio:
                 ticker = self.ib.ticker(contract)
                 if not ticker:
                     try:
-                        self.ib.reqMktData(contract, "", False, False)
+                        generic_ticks = (
+                            "106" if contract.secType in ["OPT", "FOP"] else ""
+                        )
+                        self.ib.reqMktData(contract, generic_ticks, False, False)
                         ticker = self.ib.ticker(contract)
                     except Exception:
                         pass
+
+                if (
+                    ticker
+                    and getattr(ticker, "modelGreeks", None)
+                    and ticker.modelGreeks.delta is not None
+                ):
+                    delta = ticker.modelGreeks.delta
 
                 if (
                     ticker
@@ -481,6 +500,7 @@ class IbkrPortfolio:
                 "realizedPnL": round(realized_pnl, 2),
                 "pnlPercent": round(pnl_pct, 2),
                 "account": item.account or "",
+                "delta": round(delta, 3) if delta is not None else None,
             }
 
             if contract.secType == "OPT" or contract.secType == "FOP":

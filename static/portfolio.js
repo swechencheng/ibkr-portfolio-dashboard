@@ -427,6 +427,7 @@ function renderPositions() {
       <td class="num ${pnlClass(p.pnlPercent)}">${formatPercent(p.pnlPercent)}</td>
       <td class="num">${p.marketPrice ? formatNumber(p.marketPrice, 2) : '—'}</td>
       <td class="num">${formatNumber(p.avgPrice, 2)}</td>
+      <td class="num">${p.delta !== null && p.delta !== undefined ? formatNumber(p.delta, 3) : '—'}</td>
       <td class="num ${posClass}">${formatNumber(p.position, 0)}</td>
       <td class="num">${formatCurrency(p.marketValue, 0)}</td>
       <td class="num ${pnlClass(p.unrealizedPnL)}">${formatPnL(p.unrealizedPnL, 0)}${pnlBar(p.pnlPercent)}</td>
@@ -444,6 +445,7 @@ function renderPositions() {
           <td class="num ${pnlClass(leg.pnlPercent)}">${formatPercent(leg.pnlPercent)}</td>
           <td class="num">${formatNumber(leg.marketPrice, 2)}</td>
           <td class="num">${formatNumber(leg.avgPrice, 2)}</td>
+          <td class="num">${leg.delta !== null && leg.delta !== undefined ? formatNumber(leg.delta, 3) : '—'}</td>
           <td class="num ${legPosClass}">${formatNumber(leg.position, 0)}</td>
           <td class="num">${formatCurrency(leg.marketValue, 0)}</td>
           <td class="num ${pnlClass(leg.unrealizedPnL)}">${formatPnL(leg.unrealizedPnL, 0)}</td>
