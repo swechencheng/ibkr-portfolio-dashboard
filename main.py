@@ -13,7 +13,9 @@ import uvicorn
 from ib_async import IB, util
 from ibkr_portfolio import IbkrPortfolio
 
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(
+    level=logging.WARNING, format="%(asctime)s %(levelname)s:%(name)s:%(message)s"
+)
 LOGGER = logging.getLogger("backend")
 
 # Load config
