@@ -16,8 +16,21 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from ib_async import IB
+import ib_async.wrapper
 
 LOGGER = logging.getLogger("ibkr_portfolio")
+
+# Monkey patch ib_async to ignore delayed contract details when reqId is already cleared (due to timeouts or disconnects)
+_orig_contractDetails = ib_async.wrapper.Wrapper.contractDetails
+
+
+def _patched_contractDetails(self, reqId: int, contractDetails):
+    if reqId not in self._results:
+        return
+    _orig_contractDetails(self, reqId, contractDetails)
+
+
+ib_async.wrapper.Wrapper.contractDetails = _patched_contractDetails
 
 
 class IbkrPortfolio:
