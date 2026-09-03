@@ -178,8 +178,10 @@ class DeltaMonitorEnv:
         self.ib = IB()
         # conId -> last alert timestamp
         self._alert_cooldowns: Dict[int, float] = {}
-        # conId set of contracts we already subscribed to mkt data
-        self._subscribed: set = set()
+        # conId -> Ticker
+        self._tickers: Dict[int, Any] = {}
+        # conId -> Contract
+        self._contracts: Dict[int, Any] = {}
 
     async def run(self):
         """Main loop: connect → subscribe → poll deltas forever."""
@@ -191,17 +193,20 @@ class DeltaMonitorEnv:
                         f"clientId={self.client_id}"
                     )
                     await self.ib.connectAsync(
-                        self.host, self.port, clientId=self.client_id
+                        self.host,
+                        self.port,
+                        clientId=self.client_id,
+                        account=self.account or "",
                     )
                     self.ib.reqMarketDataType(3)
-                    await self.ib.reqAccountUpdatesAsync(self.account or "")
-                    LOGGER.info(f"[{self.label}] Connected.")
-                    self._subscribed.clear()
+                    LOGGER.info(f"[{self.label}] Connected and synchronized.")
+                    self._tickers.clear()
+                    self._contracts.clear()
 
                 await self._check_deltas()
 
             except Exception as e:
-                LOGGER.error(f"[{self.label}] Error: {e}")
+                LOGGER.error(f"[{self.label}] Error: {e}", exc_info=True)
 
             await asyncio.sleep(self.poll_interval)
 
@@ -223,18 +228,23 @@ class DeltaMonitorEnv:
         if not short_options:
             return
 
+        active_con_ids = set()
         # Subscribe to market data for any new short options
         for item in short_options:
             contract = item.contract
-            if contract.conId not in self._subscribed:
+            con_id = contract.conId
+            active_con_ids.add(con_id)
+
+            if con_id not in self._tickers:
                 if not contract.exchange:
                     contract.exchange = contract.primaryExchange or "SMART"
                 try:
-                    self.ib.reqMktData(contract, "106", False, False)
-                    self._subscribed.add(contract.conId)
+                    ticker = self.ib.reqMktData(contract, "106", False, False)
+                    self._tickers[con_id] = ticker
+                    self._contracts[con_id] = contract
                     LOGGER.info(
                         f"[{self.label}] Subscribed to greeks for "
-                        f"{contract.localSymbol} (conId={contract.conId})"
+                        f"{contract.localSymbol} (conId={con_id})"
                     )
                 except Exception as e:
                     LOGGER.warning(
@@ -242,20 +252,36 @@ class DeltaMonitorEnv:
                         f"{contract.localSymbol}: {e}"
                     )
 
+        # Clean up closed or expired short option subscriptions
+        closed_con_ids = set(self._tickers.keys()) - active_con_ids
+        for con_id in closed_con_ids:
+            old_contract = self._contracts.pop(con_id, None)
+            if old_contract:
+                try:
+                    self.ib.cancelMktData(old_contract)
+                except Exception:
+                    pass
+            self._tickers.pop(con_id, None)
+            self._alert_cooldowns.pop(con_id, None)
+
         # Check deltas
         now = time.time()
         for item in short_options:
             contract = item.contract
-            ticker = self.ib.ticker(contract)
+            con_id = contract.conId
+            ticker = self._tickers.get(con_id) or self.ib.ticker(contract)
             if not ticker:
                 continue
 
             delta = None
-            if (
+            greeks = (
                 getattr(ticker, "modelGreeks", None)
-                and ticker.modelGreeks.delta is not None
-            ):
-                delta = ticker.modelGreeks.delta
+                or getattr(ticker, "lastGreeks", None)
+                or getattr(ticker, "bidGreeks", None)
+                or getattr(ticker, "askGreeks", None)
+            )
+            if greeks and greeks.delta is not None:
+                delta = greeks.delta
 
             if delta is None:
                 continue
@@ -268,11 +294,11 @@ class DeltaMonitorEnv:
 
             if abs_delta >= self.threshold:
                 # Check cooldown
-                last_alert = self._alert_cooldowns.get(contract.conId, 0)
+                last_alert = self._alert_cooldowns.get(con_id, 0)
                 if now - last_alert < self.cooldown_sec:
                     continue
 
-                self._alert_cooldowns[contract.conId] = now
+                self._alert_cooldowns[con_id] = now
                 self._send_alert(contract, delta, position)
 
     def _send_alert(self, contract, delta: float, position: float):
@@ -324,8 +350,8 @@ async def main():
         monitor = DeltaMonitorEnv(
             env_name=env_name,
             host=env_config.get("host", "127.0.0.1"),
-            port=env_config.get("port", 4002),
-            client_id=settings["client_id"],
+            port=env_config.get("port", 4002 if env_name == "paper" else 4001),
+            client_id=settings["client_id"] + (0 if env_name == "real" else 1),
             account=env_config.get("account"),
             threshold=settings["threshold"],
             cooldown_min=settings["cooldown_min"],
