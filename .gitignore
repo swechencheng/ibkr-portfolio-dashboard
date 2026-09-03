@@ -5,3 +5,4 @@ venv/
 .env
 *.log
 scratch/
+.tg_bot_secret.json

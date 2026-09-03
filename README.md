@@ -22,6 +22,7 @@ While IBKR's official tools are powerful, they come with several limitations tha
 - **Smart Reconnection**: Automatically detects IBKR server disconnects (Error 1102) and silently refreshes all portfolio data (positions, open orders, executions) the moment connectivity is restored.
 - **Cross-Client Execution Polling**: Actively polls `reqExecutionsAsync` to ensure trades executed by other API clients or automated bots appear instantly in your dashboard.
 - **Advanced Combination Handling**: Properly resolves legs, prices, and changes for complex option combination orders, presenting them as cleanly nested expandable rows.
+- **Delta Monitoring & Telegram Alerts**: A standalone daemon continuously streams Greek delta values for all short option legs. When |delta| crosses a configurable threshold, an alert is sent to Telegram so you can act before assignment risk escalates.
 - **Fast & Responsive**: Built with Vanilla JS on the frontend and FastAPI on the backend. No heavy frontend frameworks to slow down rendering.
 
 ## 🛠 Tech Stack
@@ -70,6 +71,82 @@ Once the server is running, simply navigate to:
 - **Real Account**: `http://localhost:6001/real`
 
 The dashboard will automatically connect, subscribe to live market data, and stream updates directly to your screen.
+
+## 📊 Delta Monitor
+
+The **Delta Monitor** (`delta_monitor.py`) is a standalone daemon that continuously streams Greek delta values from IBKR for all **short option legs** across both paper and real accounts.
+
+### Why?
+
+Short options that move deep ITM (|delta| → 1.0) carry increasing assignment risk. The delta monitor watches your positions and alerts you via Telegram before it's too late, so you can roll, close, or hedge.
+
+### Configuration
+
+Add an optional `delta_monitor` section to your `config.json`:
+
+```json
+{
+  "server": { "port": 6001 },
+  "ibkr": { "...": "..." },
+  "delta_monitor": {
+    "threshold": 0.65,
+    "poll_interval_sec": 30,
+    "cooldown_min": 30,
+    "client_id": 10
+  }
+}
+```
+
+| Setting             | Default | Description                                           |
+| ------------------- | ------- | ----------------------------------------------------- |
+| `threshold`         | `0.65`  | Alert when `\|delta\|` exceeds this value             |
+| `poll_interval_sec` | `30`    | Seconds between each delta check                      |
+| `cooldown_min`      | `30`    | Minutes before re-alerting on the same contract       |
+| `client_id`         | `10`    | IBKR API client ID (must differ from the dashboard's) |
+
+All fields are optional — sensible defaults apply.
+
+### Telegram Alerts (Optional)
+
+To receive alerts via Telegram, create a `.tg_bot_secret.json` file in the project root:
+
+```json
+{
+  "telegram_bot_token": "YOUR_BOT_TOKEN",
+  "telegram_chat_id": "YOUR_CHAT_ID"
+}
+```
+
+This file is listed in `.gitignore` and will not be committed. If the file is absent, the monitor still runs and logs alerts to stdout — Telegram is purely optional.
+
+**Sample alert:**
+
+```
+⚠️ Delta Alert [REAL]
+
+TSLA 250C exp 20260919
+Delta: 0.7823  (threshold: 0.65)
+Position: -3
+Local: TSLA  260919C00250000
+Time: 2026-09-03 14:30:00 UTC
+```
+
+### Running the Monitor
+
+**Directly:**
+
+```bash
+venv/bin/python delta_monitor.py
+```
+
+**As a macOS background service (launchd):**
+
+```bash
+cp com.user.ibkr_delta_monitor.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.user.ibkr_delta_monitor.plist
+```
+
+Logs are written to `delta_monitor.log` and `delta_monitor_error.log`.
 
 ## 📄 License
 

@@ -14,5 +14,11 @@
             "port": 4002,
             "client_id": 0
         }
+    },
+    "delta_monitor": {
+        "threshold": 0.65,
+        "poll_interval_sec": 30,
+        "cooldown_min": 30,
+        "client_id": 10
     }
 }
