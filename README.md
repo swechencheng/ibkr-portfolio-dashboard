@@ -97,12 +97,13 @@ Add an optional `delta_monitor` section to your `config.json`:
 }
 ```
 
-| Setting             | Default | Description                                           |
-| ------------------- | ------- | ----------------------------------------------------- |
-| `threshold`         | `0.65`  | Alert when `\|delta\|` exceeds this value             |
-| `poll_interval_sec` | `30`    | Seconds between each delta check                      |
-| `cooldown_min`      | `30`    | Minutes before re-alerting on the same contract       |
-| `client_id`         | `10`    | IBKR API client ID (must differ from the dashboard's) |
+| Setting             | Default | Description                                                          |
+| ------------------- | ------- | -------------------------------------------------------------------- |
+| `threshold`         | `0.65`  | Alert when `\|delta\|` exceeds this value                            |
+| `min_delta_change`  | `0.01`  | Skip Telegram alert if delta has not changed by `> min_delta_change` |
+| `poll_interval_sec` | `30`    | Seconds between each delta check                                     |
+| `cooldown_min`      | `30`    | Minutes before re-alerting on the same contract                      |
+| `client_id`         | `10`    | IBKR API client ID (must differ from the dashboard's)                |
 
 All fields are optional — sensible defaults apply.
 

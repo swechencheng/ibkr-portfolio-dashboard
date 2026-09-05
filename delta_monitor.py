@@ -72,6 +72,7 @@ def _load_monitor_settings(config: dict) -> dict:
         "poll_interval_sec": settings.get("poll_interval_sec", 30),
         "cooldown_min": settings.get("cooldown_min", 30),
         "client_id": settings.get("client_id", 10),
+        "min_delta_change": settings.get("min_delta_change", 0.01),
     }
 
 
@@ -163,6 +164,7 @@ class DeltaMonitorEnv:
         cooldown_min: float,
         poll_interval_sec: float,
         notifier: TelegramNotifier,
+        min_delta_change: float = 0.01,
     ):
         self.env_name = env_name
         self.label = env_name.upper()  # "PAPER" or "REAL"
@@ -174,10 +176,13 @@ class DeltaMonitorEnv:
         self.cooldown_sec = cooldown_min * 60
         self.poll_interval = poll_interval_sec
         self.notifier = notifier
+        self.min_delta_change = min_delta_change
 
         self.ib = IB()
         # conId -> last alert timestamp
         self._alert_cooldowns: Dict[int, float] = {}
+        # conId -> last alerted delta value
+        self._last_alerted_deltas: Dict[int, float] = {}
         # conId -> Ticker
         self._tickers: Dict[int, Any] = {}
         # conId -> Contract
@@ -263,6 +268,7 @@ class DeltaMonitorEnv:
                     pass
             self._tickers.pop(con_id, None)
             self._alert_cooldowns.pop(con_id, None)
+            self._last_alerted_deltas.pop(con_id, None)
 
         # Check deltas
         now = time.time()
@@ -293,12 +299,26 @@ class DeltaMonitorEnv:
             LOGGER.debug(f"[{self.label}] {symbol}: delta={delta:.4f}, pos={position}")
 
             if abs_delta >= self.threshold:
+                # Check delta change threshold: skip if delta has not changed
+                # with difference greater than min_delta_change from last alert
+                last_delta = self._last_alerted_deltas.get(con_id)
+                if (
+                    last_delta is not None
+                    and round(abs(delta - last_delta), 4) <= self.min_delta_change
+                ):
+                    LOGGER.debug(
+                        f"[{self.label}] Skipping alert for {symbol}: delta {delta:.4f} "
+                        f"has not changed > {self.min_delta_change} from last alerted {last_delta:.4f}"
+                    )
+                    continue
+
                 # Check cooldown
                 last_alert = self._alert_cooldowns.get(con_id, 0)
                 if now - last_alert < self.cooldown_sec:
                     continue
 
                 self._alert_cooldowns[con_id] = now
+                self._last_alerted_deltas[con_id] = delta
                 self._send_alert(contract, delta, position)
 
     def _send_alert(self, contract, delta: float, position: float):
@@ -337,7 +357,8 @@ async def main():
     LOGGER.info(
         f"Delta Monitor starting — threshold={settings['threshold']}, "
         f"poll={settings['poll_interval_sec']}s, "
-        f"cooldown={settings['cooldown_min']}min"
+        f"cooldown={settings['cooldown_min']}min, "
+        f"min_delta_change={settings['min_delta_change']}"
     )
 
     ibkr_settings = config.get("ibkr", {})
@@ -357,6 +378,7 @@ async def main():
             cooldown_min=settings["cooldown_min"],
             poll_interval_sec=settings["poll_interval_sec"],
             notifier=notifier,
+            min_delta_change=settings["min_delta_change"],
         )
         monitors.append(monitor)
 
