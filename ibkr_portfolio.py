@@ -12,10 +12,10 @@ JSON-serializable dicts suitable for the portfolio frontend.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, timezone
+from typing import Any, Dict, List, Optional, Set
 
-from ib_async import IB
+from ib_async import IB, Contract, Stock
 import ib_async.wrapper
 
 LOGGER = logging.getLogger("ibkr_portfolio")
@@ -47,6 +47,9 @@ class IbkrPortfolio:
         self._pnl_subscribed = False
         self._pnl_single_subscribed: Dict[int, bool] = {}
         self._combo_symbol_cache: Dict[tuple, str] = {}
+        self._prior_close_cache: Dict[int, float] = {}
+        self._prior_close_fetching: Set[int] = set()
+        self._prior_close_cache_date: Optional[str] = None
 
         # Subscribe to account and portfolio updates so that
         # ib.accountValues() and ib.portfolio() are populated.
@@ -86,9 +89,127 @@ class IbkrPortfolio:
             # Fetch recent executions
             await self.ib.reqExecutionsAsync()
 
-            LOGGER.info("Subscribed to IBKR account updates, summary, and open orders")
+            # Subscribe to market data for all portfolio positions
+            self.subscribe_market_data()
+            import asyncio
+
+            asyncio.create_task(self._delayed_subscribe_market_data())
+
+            LOGGER.info(
+                "Subscribed to IBKR account updates, summary, open orders, and market data"
+            )
         except Exception as e:
             LOGGER.warning(f"Failed to subscribe to account updates: {e}")
+
+    async def _delayed_subscribe_market_data(self):
+        import asyncio
+
+        await asyncio.sleep(2)
+        self.subscribe_market_data()
+
+    async def _fetch_prior_close(self, contract: Contract) -> Optional[float]:
+        con_id = contract.conId
+        if not con_id:
+            return None
+        self._prior_close_fetching.add(con_id)
+        try:
+            req_c = Stock(
+                conId=contract.conId,
+                symbol=contract.symbol,
+                exchange="SMART",
+                currency=contract.currency or "USD",
+            )
+            bars = await self.ib.reqHistoricalDataAsync(
+                req_c,
+                endDateTime="",
+                durationStr="5 D",
+                barSizeSetting="1 day",
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=1,
+            )
+            if bars:
+                today = date.today()
+                prior_bars = [
+                    b
+                    for b in bars
+                    if (isinstance(b.date, date) and b.date < today)
+                    or (isinstance(b.date, datetime) and b.date.date() < today)
+                ]
+                if prior_bars:
+                    prior_close = prior_bars[-1].close
+                elif len(bars) >= 2:
+                    prior_close = bars[-2].close
+                else:
+                    prior_close = bars[0].close
+
+                if prior_close and prior_close > 0:
+                    self._prior_close_cache[con_id] = float(prior_close)
+                    LOGGER.info(
+                        f"Cached prior close for {contract.symbol} ({con_id}): {prior_close}"
+                    )
+                    return float(prior_close)
+        except Exception as e:
+            LOGGER.warning(f"Failed to fetch prior close for {contract.symbol}: {e}")
+        finally:
+            self._prior_close_fetching.discard(con_id)
+        return None
+
+    async def _prefetch_all_prior_closes(self):
+        import asyncio
+
+        today_str = date.today().isoformat()
+        if self._prior_close_cache_date != today_str:
+            self._prior_close_cache.clear()
+            self._prior_close_cache_date = today_str
+
+        tasks = []
+        for item in self.ib.portfolio():
+            if self.account and item.account != self.account:
+                continue
+            c = item.contract
+            if (
+                c.secType == "STK"
+                and c.conId
+                and c.conId not in self._prior_close_cache
+            ):
+                if c.conId not in self._prior_close_fetching:
+                    tasks.append(self._fetch_prior_close(c))
+        if tasks:
+            LOGGER.info(f"Prefetching prior close for {len(tasks)} stock positions...")
+            await asyncio.gather(*tasks, return_exceptions=True)
+            LOGGER.info(
+                f"Finished prefetching prior closes. Cache size: {len(self._prior_close_cache)}"
+            )
+
+    def subscribe_market_data(self):
+        """Ensure market data is subscribed for all portfolio positions using SMART routing."""
+        import asyncio
+
+        for item in self.ib.portfolio():
+            if self.account and item.account != self.account:
+                continue
+            contract = item.contract
+            if contract.secType == "CASH":
+                continue
+            if contract.secType == "STK" or not contract.exchange:
+                contract.exchange = "SMART"
+
+            ticker = self.ib.ticker(contract)
+            if not ticker:
+                try:
+                    generic_ticks = "106" if contract.secType in ["OPT", "FOP"] else ""
+                    self.ib.reqMktData(contract, generic_ticks, False, False)
+                except Exception as e:
+                    LOGGER.warning(
+                        f"Failed to subscribe market data for {contract.symbol}: {e}"
+                    )
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._prefetch_all_prior_closes())
+        except RuntimeError:
+            pass
 
     # ------------------------------------------------------------------
     # Account summary
@@ -459,8 +580,8 @@ class IbkrPortfolio:
             change_pct = None
             delta = None
             if contract.secType != "CASH":
-                if not contract.exchange:
-                    contract.exchange = contract.primaryExchange or "SMART"
+                if contract.secType == "STK" or not contract.exchange:
+                    contract.exchange = "SMART"
 
                 ticker = self.ib.ticker(contract)
                 if not ticker:
@@ -480,18 +601,35 @@ class IbkrPortfolio:
                 ):
                     delta = ticker.modelGreeks.delta
 
+                close_price = None
                 if (
                     ticker
                     and getattr(ticker, "close", None) is not None
                     and ticker.close == ticker.close
                     and ticker.close > 0
                 ):
-                    current_price = ticker.marketPrice()
+                    close_price = ticker.close
+                    if contract.conId:
+                        self._prior_close_cache[contract.conId] = float(ticker.close)
+                elif contract.conId in self._prior_close_cache:
+                    close_price = self._prior_close_cache[contract.conId]
+                elif contract.secType == "STK" and contract.conId:
+                    if contract.conId not in self._prior_close_fetching:
+                        import asyncio
+
+                        try:
+                            loop = asyncio.get_running_loop()
+                            loop.create_task(self._fetch_prior_close(contract))
+                        except RuntimeError:
+                            pass
+
+                if close_price and close_price > 0:
+                    current_price = ticker.marketPrice() if ticker else 0.0
                     if current_price != current_price or current_price == 0:
                         current_price = market_price
 
                     if current_price and current_price > 0:
-                        change_pct = (current_price - ticker.close) / ticker.close * 100
+                        change_pct = (current_price - close_price) / close_price * 100
 
             pos_dict = {
                 "conId": contract.conId,
