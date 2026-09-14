@@ -557,21 +557,21 @@
     /* ── P&L value change flash animation ─────────────────────── */
     @keyframes flash-green {
       0% {
-        background: rgba(34, 197, 94, 0.25);
+        background-color: rgba(34, 197, 94, 0.35);
       }
 
       100% {
-        background: transparent;
+        background-color: transparent;
       }
     }
 
     @keyframes flash-red {
       0% {
-        background: rgba(239, 68, 68, 0.25);
+        background-color: rgba(239, 68, 68, 0.35);
       }
 
       100% {
-        background: transparent;
+        background-color: transparent;
       }
     }
 
@@ -616,8 +616,9 @@
       cursor: pointer;
     }
 
-    .combo-row:hover {
-      background: var(--surface-high);
+    tbody tr.combo-row:hover td {
+      background: var(--bg-row-hover);
+      cursor: pointer;
     }
 
     .combo-row .combo-icon {

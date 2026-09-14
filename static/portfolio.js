@@ -279,6 +279,7 @@ function handleWsMessage(msg) {
     if (msg.positions) {
       state.positions = msg.positions;
       renderPositions();
+      renderStatRow();
     }
     state.lastUpdate = new Date();
     updateLastUpdated();
@@ -309,6 +310,7 @@ function updateConnectionBadge() {
 function renderSummary() {
   const s = state.summary;
   const grid = document.getElementById('summaryGrid');
+  if (!grid) return;
 
   const cards = [
     { label: 'Net Liquidation', key: 'netLiquidation', accent: 'blue', decimals: 0 },
@@ -320,6 +322,34 @@ function renderSummary() {
     { label: 'Available Funds', key: 'availableFunds', accent: 'cyan', decimals: 0 },
     { label: 'Cushion', key: 'cushion', accent: 'blue', percent: true },
   ];
+
+  if (grid.children.length === cards.length) {
+    cards.forEach((c, i) => {
+      const raw = s[c.key];
+      let displayVal = '—';
+      let valClass = '';
+
+      if (raw != null && !isNaN(raw)) {
+        if (c.percent) {
+          displayVal = Number(raw).toFixed(1) + '%';
+        } else if (c.pnl) {
+          displayVal = formatPnL(raw, c.decimals);
+          valClass = pnlClass(raw);
+        } else {
+          displayVal = formatCurrency(raw, c.decimals);
+        }
+      }
+
+      const cardEl = grid.children[i];
+      const valEl = cardEl.querySelector('.value');
+      if (valEl) {
+        if (valEl.textContent !== displayVal) valEl.textContent = displayVal;
+        const targetCls = `value ${valClass}`.trim();
+        if (valEl.className !== targetCls) valEl.className = targetCls;
+      }
+    });
+    return;
+  }
 
   grid.innerHTML = cards.map(c => {
     const raw = s[c.key];
@@ -351,6 +381,7 @@ function renderStatRow() {
   const pnl = state.pnl;
   const pos = state.positions;
   const row = document.getElementById('statRow');
+  if (!row) return;
 
   const totalUnrealized = pos.reduce((sum, p) => sum + (p.unrealizedPnL || 0), 0);
   const totalRealized = pos.reduce((sum, p) => sum + (p.realizedPnL || 0), 0);
@@ -367,12 +398,173 @@ function renderStatRow() {
     { label: 'Positions', value: String(pos.length), cls: '' },
   ];
 
+  if (row.children.length === pills.length) {
+    pills.forEach((p, i) => {
+      const valEl = row.children[i].querySelector('.stat-value');
+      if (valEl) {
+        if (valEl.textContent !== p.value) valEl.textContent = p.value;
+        const targetCls = `stat-value ${p.cls}`.trim();
+        if (valEl.className !== targetCls) valEl.className = targetCls;
+      }
+    });
+    return;
+  }
+
   row.innerHTML = pills.map(p =>
     `<div class="stat-pill">
       <span class="stat-label">${p.label}</span>
       <span class="stat-value ${p.cls}">${p.value}</span>
     </div>`
   ).join('');
+}
+
+function getComboId(symbol) {
+  return 'combo-' + symbol.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+function getPosRowId(p) {
+  if (p.secType === 'COMBO') {
+    return getComboId(p.localSymbol || p.symbol);
+  }
+  if (p.secType === 'CASH') {
+    return 'cash-' + (p.symbol || 'curr');
+  }
+  return 'pos-' + (p.conId || (p.localSymbol || p.symbol).replace(/[^a-zA-Z0-9]/g, '-'));
+}
+
+function toggleCombo(comboId) {
+  if (state.expandedCombos.has(comboId)) {
+    state.expandedCombos.delete(comboId);
+  } else {
+    state.expandedCombos.add(comboId);
+  }
+
+  const isExpanded = state.expandedCombos.has(comboId);
+  const parentRow = document.getElementById(comboId);
+  if (parentRow) parentRow.classList.toggle('expanded', isExpanded);
+
+  const childRows = document.querySelectorAll(`.leg-${comboId}`);
+  childRows.forEach(row => row.classList.toggle('expanded', isExpanded));
+}
+
+window.toggleCombo = toggleCombo;
+
+function setupPositionsTableEvents() {
+  const tbody = document.getElementById('positionsBody');
+  if (!tbody || tbody.dataset.hasComboListener) return;
+  tbody.dataset.hasComboListener = 'true';
+
+  tbody.addEventListener('click', (e) => {
+    const comboRow = e.target.closest('.combo-row');
+    if (comboRow && comboRow.dataset.comboId) {
+      toggleCombo(comboRow.dataset.comboId);
+    }
+  });
+}
+
+function updateCell(cell, text, className) {
+  if (cell.textContent !== text) cell.textContent = text;
+  if (className && cell.className !== className) cell.className = className;
+}
+
+function updateCellHTML(cell, html, className) {
+  if (cell.innerHTML !== html) cell.innerHTML = html;
+  if (className && cell.className !== className) cell.className = className;
+}
+
+function updatePositionRowDOM(row, p, isLeg = false) {
+  const symbol = p.localSymbol || p.symbol;
+  const posClass = p.position > 0 ? 'positive' : p.position < 0 ? 'negative' : '';
+
+  // Flash animation logic specifically on the unrealized P&L cell
+  const prevPnL = state.previousPnL[symbol];
+  let flashClass = '';
+  if (prevPnL !== undefined && prevPnL !== p.unrealizedPnL) {
+    flashClass = p.unrealizedPnL > prevPnL ? 'flash-positive' : 'flash-negative';
+  }
+  state.previousPnL[symbol] = p.unrealizedPnL;
+
+  const cells = row.children;
+  if (cells.length < 10) return;
+
+  // Change %
+  updateCell(cells[1], formatPercent(p.changePercent), `num cell-change ${pnlClass(p.changePercent)}`);
+  // P&L %
+  updateCell(cells[2], formatPercent(p.pnlPercent), `num cell-pnl-pct ${pnlClass(p.pnlPercent)}`);
+  // Mkt Price
+  updateCell(cells[3], p.marketPrice ? formatNumber(p.marketPrice, 2) : '—', 'num cell-price');
+  // Avg Price
+  updateCell(cells[4], formatNumber(p.avgPrice, 2), 'num cell-avg-price');
+  // Delta
+  updateCell(cells[5], p.delta !== null && p.delta !== undefined ? formatNumber(p.delta, 3) : '—', 'num cell-delta');
+  // Position
+  updateCell(cells[6], formatNumber(p.position, 0), `num cell-pos ${posClass}`);
+  // Mkt Value
+  updateCell(cells[7], formatCurrency(p.marketValue, 0), 'num cell-mkt-val');
+  // Unrealized P&L (with sparkline bar)
+  const pnlHtml = isLeg
+    ? formatPnL(p.unrealizedPnL, 0)
+    : `${formatPnL(p.unrealizedPnL, 0)}${pnlBar(p.pnlPercent)}`;
+  const pnlCls = `num cell-unrealized ${pnlClass(p.unrealizedPnL)}${flashClass ? ' ' + flashClass : ''}`;
+  updateCellHTML(cells[8], pnlHtml, pnlCls);
+  if (flashClass) {
+    setTimeout(() => {
+      cells[8].classList.remove('flash-positive', 'flash-negative');
+    }, 800);
+  }
+  // Realized P&L
+  updateCell(cells[9], formatPnL(p.realizedPnL, 0), `num cell-realized ${pnlClass(p.realizedPnL)}`);
+}
+
+function renderPositionRowHTML(p) {
+  const symbol = p.localSymbol || p.symbol;
+  const isCombo = p.secType === 'COMBO';
+  const hasLegs = isCombo && p.legs && p.legs.length > 0;
+  const rowId = getPosRowId(p);
+  const isExpanded = isCombo && state.expandedCombos.has(rowId);
+  const expandedClass = isExpanded ? 'expanded' : '';
+  const posClass = p.position > 0 ? 'positive' : p.position < 0 ? 'negative' : '';
+
+  let trHtml = `<tr id="${rowId}" class="${isCombo ? 'combo-row' : ''} ${expandedClass}" ${isCombo ? `data-combo-id="${rowId}"` : ''}>
+    <td class="cell-symbol">
+      <strong>
+        ${isCombo ? '<span class="combo-icon">▶</span> ' : ''}${symbol}
+      </strong>
+    </td>
+    <td class="num cell-change ${pnlClass(p.changePercent)}">${formatPercent(p.changePercent)}</td>
+    <td class="num cell-pnl-pct ${pnlClass(p.pnlPercent)}">${formatPercent(p.pnlPercent)}</td>
+    <td class="num cell-price">${p.marketPrice ? formatNumber(p.marketPrice, 2) : '—'}</td>
+    <td class="num cell-avg-price">${formatNumber(p.avgPrice, 2)}</td>
+    <td class="num cell-delta">${p.delta !== null && p.delta !== undefined ? formatNumber(p.delta, 3) : '—'}</td>
+    <td class="num cell-pos ${posClass}">${formatNumber(p.position, 0)}</td>
+    <td class="num cell-mkt-val">${formatCurrency(p.marketValue, 0)}</td>
+    <td class="num cell-unrealized ${pnlClass(p.unrealizedPnL)}">${formatPnL(p.unrealizedPnL, 0)}${pnlBar(p.pnlPercent)}</td>
+    <td class="num cell-realized ${pnlClass(p.realizedPnL)}">${formatPnL(p.realizedPnL, 0)}</td>
+    <td class="mono cell-sectype" style="color:var(--text-dim)">${p.secType}</td>
+  </tr>`;
+
+  if (hasLegs) {
+    const legsHtml = p.legs.map((leg, idx) => {
+      const legSymbol = leg.localSymbol || leg.symbol;
+      const legPosClass = leg.position > 0 ? 'positive' : leg.position < 0 ? 'negative' : '';
+      return `<tr id="${rowId}-leg-${idx}" class="leg-row leg-${rowId} ${expandedClass}">
+        <td class="cell-symbol">${legSymbol}</td>
+        <td class="num cell-change ${pnlClass(leg.changePercent)}">${formatPercent(leg.changePercent)}</td>
+        <td class="num cell-pnl-pct ${pnlClass(leg.pnlPercent)}">${formatPercent(leg.pnlPercent)}</td>
+        <td class="num cell-price">${formatNumber(leg.marketPrice, 2)}</td>
+        <td class="num cell-avgPrice">${formatNumber(leg.avgPrice, 2)}</td>
+        <td class="num cell-delta">${leg.delta !== null && leg.delta !== undefined ? formatNumber(leg.delta, 3) : '—'}</td>
+        <td class="num cell-pos ${legPosClass}">${formatNumber(leg.position, 0)}</td>
+        <td class="num cell-mkt-val">${formatCurrency(leg.marketValue, 0)}</td>
+        <td class="num cell-unrealized ${pnlClass(leg.unrealizedPnL)}">${formatPnL(leg.unrealizedPnL, 0)}</td>
+        <td class="num cell-realized ${pnlClass(leg.realizedPnL)}">${formatPnL(leg.realizedPnL, 0)}</td>
+        <td class="mono cell-sectype" style="color:var(--text-dim)"></td>
+      </tr>`;
+    }).join('');
+    trHtml += legsHtml;
+  }
+
+  return trHtml;
 }
 
 function renderPositions() {
@@ -383,80 +575,49 @@ function renderPositions() {
   countBadge.textContent = sorted.length;
 
   if (sorted.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty-state"><div class="empty-icon">📭</div>No positions</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state"><div class="empty-icon">📭</div>No positions</td></tr>';
     return;
   }
 
-  window.toggleCombo = function (comboId) {
-    if (state.expandedCombos.has(comboId)) {
-      state.expandedCombos.delete(comboId);
-    } else {
-      state.expandedCombos.add(comboId);
+  setupPositionsTableEvents();
+
+  // Determine expected row IDs
+  const expectedRowIds = [];
+  for (const p of sorted) {
+    const rowId = getPosRowId(p);
+    expectedRowIds.push(rowId);
+    if (p.secType === 'COMBO' && p.legs && p.legs.length > 0) {
+      p.legs.forEach((_, idx) => expectedRowIds.push(`${rowId}-leg-${idx}`));
     }
+  }
 
-    const parentRow = document.getElementById(`combo-${comboId}`);
-    if (parentRow) parentRow.classList.toggle('expanded', state.expandedCombos.has(comboId));
+  // Check if current DOM matches expectedRowIds exactly in sequence
+  const existingRows = tbody.querySelectorAll('tr[id]');
+  const matchesSequence =
+    existingRows.length === expectedRowIds.length &&
+    Array.from(existingRows).every((r, i) => r.id === expectedRowIds[i]);
 
-    const childRows = document.querySelectorAll(`.leg-${comboId}`);
-    childRows.forEach(row => row.classList.toggle('expanded', state.expandedCombos.has(comboId)));
-  };
-
-  tbody.innerHTML = sorted.map((p, idx) => {
-    const symbol = p.localSymbol || p.symbol;
-    const prevPnL = state.previousPnL[symbol];
-    let flashClass = '';
-    if (prevPnL !== undefined && prevPnL !== p.unrealizedPnL) {
-      flashClass = p.unrealizedPnL > prevPnL ? 'flash-positive' : 'flash-negative';
+  if (matchesSequence) {
+    // Fast path: In-place DOM update without destroying ANY <tr> elements
+    for (const p of sorted) {
+      const rowId = getPosRowId(p);
+      const row = document.getElementById(rowId);
+      if (row) {
+        updatePositionRowDOM(row, p, false);
+      }
+      if (p.secType === 'COMBO' && p.legs && p.legs.length > 0) {
+        p.legs.forEach((leg, idx) => {
+          const legRow = document.getElementById(`${rowId}-leg-${idx}`);
+          if (legRow) {
+            updatePositionRowDOM(legRow, leg, true);
+          }
+        });
+      }
     }
-    state.previousPnL[symbol] = p.unrealizedPnL;
-
-    const posClass = p.position > 0 ? 'positive' : p.position < 0 ? 'negative' : '';
-    const isCombo = p.secType === 'COMBO';
-    const hasLegs = isCombo && p.legs && p.legs.length > 0;
-    const comboId = 'combo-' + symbol.replace(/[^a-zA-Z0-9]/g, '-');
-    const isExpanded = state.expandedCombos.has(comboId);
-    const expandedClass = isExpanded ? 'expanded' : '';
-
-    let trHtml = `<tr id="combo-${comboId}" class="${flashClass} ${isCombo ? 'combo-row' : ''} ${expandedClass}" ${isCombo ? `onclick="toggleCombo('${comboId}')"` : ''}>
-      <td>
-        <strong>
-          ${isCombo ? '<span class="combo-icon">▶</span> ' : ''}${symbol}
-        </strong>
-      </td>
-      <td class="num ${pnlClass(p.changePercent)}">${formatPercent(p.changePercent)}</td>
-      <td class="num ${pnlClass(p.pnlPercent)}">${formatPercent(p.pnlPercent)}</td>
-      <td class="num">${p.marketPrice ? formatNumber(p.marketPrice, 2) : '—'}</td>
-      <td class="num">${formatNumber(p.avgPrice, 2)}</td>
-      <td class="num">${p.delta !== null && p.delta !== undefined ? formatNumber(p.delta, 3) : '—'}</td>
-      <td class="num ${posClass}">${formatNumber(p.position, 0)}</td>
-      <td class="num">${formatCurrency(p.marketValue, 0)}</td>
-      <td class="num ${pnlClass(p.unrealizedPnL)}">${formatPnL(p.unrealizedPnL, 0)}${pnlBar(p.pnlPercent)}</td>
-      <td class="num ${pnlClass(p.realizedPnL)}">${formatPnL(p.realizedPnL, 0)}</td>
-      <td class="mono" style="color:var(--text-dim)">${p.secType}</td>
-    </tr>`;
-
-    if (hasLegs) {
-      const legsHtml = p.legs.map(leg => {
-        const legSymbol = leg.localSymbol || leg.symbol;
-        const legPosClass = leg.position > 0 ? 'positive' : leg.position < 0 ? 'negative' : '';
-        return `<tr class="leg-row leg-${comboId} ${expandedClass}">
-          <td>${legSymbol}</td>
-          <td class="num ${pnlClass(leg.changePercent)}">${formatPercent(leg.changePercent)}</td>
-          <td class="num ${pnlClass(leg.pnlPercent)}">${formatPercent(leg.pnlPercent)}</td>
-          <td class="num">${formatNumber(leg.marketPrice, 2)}</td>
-          <td class="num">${formatNumber(leg.avgPrice, 2)}</td>
-          <td class="num">${leg.delta !== null && leg.delta !== undefined ? formatNumber(leg.delta, 3) : '—'}</td>
-          <td class="num ${legPosClass}">${formatNumber(leg.position, 0)}</td>
-          <td class="num">${formatCurrency(leg.marketValue, 0)}</td>
-          <td class="num ${pnlClass(leg.unrealizedPnL)}">${formatPnL(leg.unrealizedPnL, 0)}</td>
-          <td class="num ${pnlClass(leg.realizedPnL)}">${formatPnL(leg.realizedPnL, 0)}</td>
-        </tr>`;
-      }).join('');
-      trHtml += legsHtml;
-    }
-
-    return trHtml;
-  }).join('');
+  } else {
+    // Full render path: rebuild HTML (on sort change, positions added/removed, or initial load)
+    tbody.innerHTML = sorted.map(p => renderPositionRowHTML(p)).join('');
+  }
 }
 
 function renderOrders() {

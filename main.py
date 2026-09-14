@@ -69,6 +69,11 @@ class IBKREnvironment:
         self.portfolio: Optional[IbkrPortfolio] = None
         self.manager = ConnectionManager()
 
+        self._portfolio_update_task: Optional[asyncio.Task] = None
+        self._portfolio_dirty: bool = False
+        self._order_update_task: Optional[asyncio.Task] = None
+        self._exec_update_task: Optional[asyncio.Task] = None
+
         self.ib.openOrderEvent += self.on_order_update
         self.ib.orderStatusEvent += self.on_order_update
         self.ib.execDetailsEvent += self.on_exec_update
@@ -78,78 +83,78 @@ class IBKREnvironment:
         self.ib.errorEvent += self.on_error
 
     def on_order_update(self, trade):
-        if self.portfolio:
-            try:
+        if not self.portfolio:
+            return
+        if self._order_update_task is None or self._order_update_task.done():
 
-                async def broadcast_orders():
-                    try:
-                        orders = await self.portfolio.get_open_orders_async()
-                        await self.manager.broadcast(
-                            {"type": "order_update", "orders": orders}
-                        )
-                    except Exception as e:
-                        LOGGER.error(
-                            f"[{self.env_name}] Error in broadcast_orders task: {e}"
-                        )
+            async def debounced_orders():
+                try:
+                    await asyncio.sleep(0.3)
+                    orders = await self.portfolio.get_open_orders_async()
+                    await self.manager.broadcast(
+                        {"type": "order_update", "orders": orders}
+                    )
+                except Exception as e:
+                    LOGGER.error(f"[{self.env_name}] Error broadcasting orders: {e}")
 
-                asyncio.create_task(broadcast_orders())
-            except Exception as e:
-                LOGGER.error(f"[{self.env_name}] Error broadcasting orders: {e}")
+            self._order_update_task = asyncio.create_task(debounced_orders())
+
+    def _schedule_exec_broadcast(self):
+        if not self.portfolio:
+            return
+        if self._exec_update_task is None or self._exec_update_task.done():
+
+            async def debounced_execs():
+                try:
+                    await asyncio.sleep(0.3)
+                    executions = await self.portfolio.get_executions_async()
+                    await self.manager.broadcast(
+                        {"type": "execution_update", "executions": executions}
+                    )
+                except Exception as e:
+                    LOGGER.error(
+                        f"[{self.env_name}] Error broadcasting executions: {e}"
+                    )
+
+            self._exec_update_task = asyncio.create_task(debounced_execs())
 
     def on_exec_update(self, trade, fill):
-        if self.portfolio:
-            try:
-
-                async def broadcast_executions():
-                    try:
-                        executions = await self.portfolio.get_executions_async()
-                        await self.manager.broadcast(
-                            {"type": "execution_update", "executions": executions}
-                        )
-                    except Exception as e:
-                        LOGGER.error(
-                            f"[{self.env_name}] Error in broadcast_executions task: {e}"
-                        )
-
-                asyncio.create_task(broadcast_executions())
-            except Exception as e:
-                LOGGER.error(f"[{self.env_name}] Error broadcasting executions: {e}")
+        self._schedule_exec_broadcast()
 
     def on_commission_update(self, trade, fill, report):
-        if self.portfolio:
-            try:
+        self._schedule_exec_broadcast()
 
-                async def broadcast_commissions():
-                    try:
-                        executions = await self.portfolio.get_executions_async()
-                        await self.manager.broadcast(
-                            {"type": "execution_update", "executions": executions}
-                        )
-                    except Exception as e:
-                        LOGGER.error(
-                            f"[{self.env_name}] Error in broadcast_commissions task: {e}"
-                        )
+    def _schedule_portfolio_broadcast(self):
+        if not self.portfolio:
+            return
+        self._portfolio_dirty = True
+        if self._portfolio_update_task is None or self._portfolio_update_task.done():
+            self._portfolio_update_task = asyncio.create_task(
+                self._debounced_portfolio_broadcast()
+            )
 
-                asyncio.create_task(broadcast_commissions())
-            except Exception as e:
-                LOGGER.error(f"[{self.env_name}] Error broadcasting commissions: {e}")
-
-    def on_update_portfolio(self, item):
-        if self.portfolio:
-            try:
+    async def _debounced_portfolio_broadcast(self):
+        try:
+            # Throttle portfolio broadcast to max once per ~0.8s to avoid UI thrashing
+            await asyncio.sleep(0.8)
+            if self.portfolio and self._portfolio_dirty:
+                self._portfolio_dirty = False
                 summary = self.portfolio.get_account_summary()
                 positions = self.portfolio.get_portfolio_positions()
-                asyncio.create_task(
-                    self.manager.broadcast(
-                        {
-                            "type": "portfolio_update",
-                            "summary": summary,
-                            "positions": positions,
-                        }
-                    )
+                await self.manager.broadcast(
+                    {
+                        "type": "portfolio_update",
+                        "summary": summary,
+                        "positions": positions,
+                    }
                 )
-            except Exception as e:
-                LOGGER.error(f"[{self.env_name}] Error handling portfolio update: {e}")
+        except Exception as e:
+            LOGGER.error(
+                f"[{self.env_name}] Error in debounced portfolio broadcast: {e}"
+            )
+
+    def on_update_portfolio(self, item):
+        self._schedule_portfolio_broadcast()
 
     def on_error(self, reqId, errorCode, errorString):
         if errorCode == 1102 and self.portfolio:
@@ -159,23 +164,7 @@ class IBKREnvironment:
             asyncio.create_task(self.portfolio._subscribe_async())
 
     def on_update_account_value(self, value):
-        if self.portfolio:
-            try:
-                summary = self.portfolio.get_account_summary()
-                positions = self.portfolio.get_portfolio_positions()
-                asyncio.create_task(
-                    self.manager.broadcast(
-                        {
-                            "type": "portfolio_update",
-                            "summary": summary,
-                            "positions": positions,
-                        }
-                    )
-                )
-            except Exception as e:
-                LOGGER.error(
-                    f"[{self.env_name}] Error handling account value update: {e}"
-                )
+        self._schedule_portfolio_broadcast()
 
     async def connect_loop(self):
         while True:
