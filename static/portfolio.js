@@ -26,6 +26,7 @@ const state = {
   },
   previousPnL: {}, // Track previous P&L values for flash animation
   expandedCombos: new Set(),
+  expandedExecutions: new Set(),
 };
 
 const pathname = window.location.pathname; // e.g. "/paper" or "/real"
@@ -649,6 +650,23 @@ function renderOrders() {
   }).join('');
 }
 
+function toggleExecGroup(execId) {
+  if (state.expandedExecutions.has(execId)) {
+    state.expandedExecutions.delete(execId);
+  } else {
+    state.expandedExecutions.add(execId);
+  }
+
+  const isExpanded = state.expandedExecutions.has(execId);
+  const parentRow = document.getElementById(`exec-row-${execId}`);
+  if (parentRow) parentRow.classList.toggle('expanded', isExpanded);
+
+  const childRows = document.querySelectorAll(`.sub-exec-${execId}`);
+  childRows.forEach(row => row.classList.toggle('expanded', isExpanded));
+}
+
+window.toggleExecGroup = toggleExecGroup;
+
 function renderExecutions() {
   const tbody = document.getElementById('executionsBody');
   const countBadge = document.getElementById('execCount');
@@ -662,15 +680,48 @@ function renderExecutions() {
   }
 
   tbody.innerHTML = sorted.map(e => {
-    return `<tr>
-      <td class="mono" style="color:var(--text-dim)">${formatTime(e.time)}</td>
+    const execId = String(e.permId || e.orderId || e.execId || Math.random());
+    const hasSubs = e.subExecutions && e.subExecutions.length > 1;
+    const isExpanded = hasSubs && state.expandedExecutions.has(execId);
+    const expandedClass = isExpanded ? 'expanded' : '';
+
+    const qtyStr = e.quantityDisplay || (e.quantity != null ? String(e.quantity) : '—');
+    const isPartial = e.isPartial || (e.totalQuantity && e.quantity < e.totalQuantity);
+    const qtyHtml = isPartial
+      ? `<span class="qty-partial">${qtyStr}</span>`
+      : qtyStr;
+
+    const rowOnClick = hasSubs ? `onclick="toggleExecGroup('${execId}')"` : '';
+    const groupClass = hasSubs ? 'exec-group-row' : '';
+
+    let html = `<tr id="exec-row-${execId}" class="${groupClass} ${expandedClass}" ${rowOnClick}>
+      <td class="mono" style="color:var(--text-dim)">
+        ${hasSubs ? `<span class="combo-icon">▶</span>` : ''}
+        ${formatTime(e.time)}
+      </td>
       <td><strong>${e.localSymbol || e.symbol}</strong></td>
       <td class="num ${pnlClass(e.realizedPnL)}">${e.realizedPnL != null ? formatPnL(e.realizedPnL, 2) : '—'}</td>
       <td class="num" style="color:var(--text-dim)">${e.commission ? formatNumber(e.commission, 2) : '—'}</td>
       <td class="num">${formatNumber(e.price, 2)}</td>
-      <td class="num">${e.quantity}</td>
+      <td class="num">${qtyHtml}</td>
       <td>${actionTag(e.side)}</td>
     </tr>`;
+
+    if (hasSubs) {
+      e.subExecutions.forEach(sub => {
+        html += `<tr class="sub-exec-row sub-exec-${execId} ${expandedClass}">
+          <td class="mono" style="color:var(--text-dim)">${formatTime(sub.time)}</td>
+          <td style="color:var(--text-secondary)">${sub.localSymbol || sub.symbol}</td>
+          <td class="num ${pnlClass(sub.realizedPnL)}">${sub.realizedPnL != null ? formatPnL(sub.realizedPnL, 2) : '—'}</td>
+          <td class="num" style="color:var(--text-dim)">${sub.commission ? formatNumber(sub.commission, 2) : '—'}</td>
+          <td class="num">${formatNumber(sub.price, 2)}</td>
+          <td class="num">${sub.quantity}</td>
+          <td>${actionTag(sub.side)}</td>
+        </tr>`;
+      });
+    }
+
+    return html;
   }).join('');
 }
 

@@ -924,51 +924,174 @@ class IbkrPortfolio:
 
     async def get_executions_async(self) -> List[Dict[str, Any]]:
         """
-        Return recent executions from the current IBKR session.
+        Return recent executions grouped by order (permId).
 
-        Uses ib.fills() which returns Fill objects:
-            Fill(contract, execution, commissionReport, time)
+        Similar to IBKR mobile "Trades", executions belonging to the same order
+        are grouped into a single row. For partially filled orders, displays
+        'X/Y' where X is filled quantity and Y is total order quantity.
+        When X == Y, displays just Y.
         """
         fills = self.ib.fills()
-        executions = []
+        if not fills:
+            return []
 
+        # Build map of order target quantities from known trades
+        order_qty_by_perm: Dict[int, float] = {}
+        for trade in self.ib.trades():
+            pid = getattr(trade.order, "permId", 0)
+            tot = getattr(trade.order, "totalQuantity", 0.0)
+            if pid and tot > 0:
+                order_qty_by_perm[pid] = float(tot)
+        for trade in self.ib.openTrades():
+            pid = getattr(trade.order, "permId", 0)
+            tot = getattr(trade.order, "totalQuantity", 0.0)
+            if pid and tot > 0:
+                order_qty_by_perm[pid] = float(tot)
+
+        # Group fills by permId (or orderId fallback)
+        fills_by_group: Dict[Any, list] = {}
         for fill in fills:
             exec_ = fill.execution
             if self.account and exec_.acctNumber != self.account:
                 continue
+            group_key = (
+                exec_.permId
+                if getattr(exec_, "permId", 0)
+                else f"oid_{exec_.orderId}_{fill.contract.symbol}"
+            )
+            fills_by_group.setdefault(group_key, []).append(fill)
 
-            contract = fill.contract
-            comm = fill.commissionReport
+        grouped_executions = []
 
-            symbol_resolved, local_symbol_resolved = (
-                await self._resolve_contract_symbol_async(contract)
+        for group_key, group_fills in fills_by_group.items():
+            if not group_fills:
+                continue
+
+            # Check if this order is a combo
+            is_combo = any(f.contract.secType == "BAG" for f in group_fills)
+            bag_fills = [f for f in group_fills if f.contract.secType == "BAG"]
+
+            # Main fills used to determine primary contract, side, shares, and VWAP price
+            main_fills = bag_fills if is_combo and bag_fills else group_fills
+            primary_fill = main_fills[0]
+            primary_contract = primary_fill.contract
+
+            filled_shares = sum(f.execution.shares for f in main_fills)
+            tot_val = sum(f.execution.price * f.execution.shares for f in main_fills)
+            avg_price = float(tot_val / filled_shares) if filled_shares > 0 else 0.0
+
+            # Commission and realized PnL aggregated across ALL fills in this order
+            tot_comm = sum(
+                float(f.commissionReport.commission)
+                for f in group_fills
+                if f.commissionReport and f.commissionReport.commission
+            )
+            pnl_list = [
+                float(f.commissionReport.realizedPNL)
+                for f in group_fills
+                if f.commissionReport and f.commissionReport.realizedPNL is not None
+            ]
+            tot_pnl = float(sum(pnl_list)) if pnl_list else None
+
+            # Determine target quantity Y
+            perm_id = getattr(primary_fill.execution, "permId", 0)
+            target_qty = order_qty_by_perm.get(perm_id, filled_shares)
+            if target_qty <= 0:
+                target_qty = filled_shares
+
+            is_partial = filled_shares < target_qty
+            qty_display = (
+                f"{int(filled_shares)}/{int(target_qty)}"
+                if is_partial
+                else f"{int(filled_shares)}"
             )
 
-            executions.append(
+            # Latest execution time for the order
+            valid_times = [f.execution.time for f in group_fills if f.execution.time]
+            latest_time = max(valid_times) if valid_times else None
+
+            symbol_resolved, local_symbol_resolved = (
+                await self._resolve_contract_symbol_async(primary_contract)
+            )
+
+            if is_combo and (
+                not getattr(primary_contract, "comboLegs", None)
+                or local_symbol_resolved == symbol_resolved
+            ):
+                leg_fills = [f for f in group_fills if f.contract.secType != "BAG"]
+                if leg_fills:
+                    unique_legs = {}
+                    for lf in leg_fills:
+                        lc = lf.contract
+                        act = "BUY" if lf.execution.side == "BOT" else "SELL"
+                        k = (act, lc.strike, lc.right)
+                        unique_legs[k] = f"{act} 1x {lc.strike}{lc.right}"
+                    desc = ", ".join(unique_legs.values())
+                    local_symbol_resolved = f"{symbol_resolved} ({desc})"
+
+            # Build sub-executions list for drill-down
+            # Sort individual fills chronologically descending
+            sorted_sub_fills = sorted(
+                group_fills,
+                key=lambda f: f.execution.time
+                or datetime.min.replace(tzinfo=timezone.utc),
+                reverse=True,
+            )
+            sub_executions = []
+            for sf in sorted_sub_fills:
+                sf_exec = sf.execution
+                sf_comm = sf.commissionReport
+                sf_sym, sf_local = await self._resolve_contract_symbol_async(
+                    sf.contract
+                )
+                sub_executions.append(
+                    {
+                        "execId": sf_exec.execId,
+                        "time": sf_exec.time.isoformat() if sf_exec.time else None,
+                        "symbol": sf_sym,
+                        "localSymbol": sf_local,
+                        "secType": sf.contract.secType or "",
+                        "side": sf_exec.side,
+                        "quantity": int(sf_exec.shares),
+                        "price": float(sf_exec.price),
+                        "commission": (
+                            float(sf_comm.commission)
+                            if sf_comm and sf_comm.commission
+                            else 0.0
+                        ),
+                        "realizedPnL": (
+                            float(sf_comm.realizedPNL)
+                            if sf_comm and sf_comm.realizedPNL is not None
+                            else None
+                        ),
+                        "exchange": sf_exec.exchange or "",
+                    }
+                )
+
+            grouped_executions.append(
                 {
-                    "execId": exec_.execId,
+                    "permId": perm_id,
+                    "orderId": primary_fill.execution.orderId,
                     "symbol": symbol_resolved,
                     "localSymbol": local_symbol_resolved,
-                    "secType": contract.secType or "",
-                    "side": exec_.side,  # "BOT" or "SLD"
-                    "quantity": int(exec_.shares),
-                    "price": float(exec_.price),
-                    "time": exec_.time.isoformat() if exec_.time else None,
-                    "exchange": exec_.exchange or "",
-                    "orderId": exec_.orderId,
-                    "commission": (
-                        float(comm.commission) if comm and comm.commission else 0.0
-                    ),
-                    "realizedPnL": (
-                        float(comm.realizedPNL) if comm and comm.realizedPNL else None
-                    ),
-                    "currency": contract.currency or "",
+                    "secType": primary_contract.secType or "",
+                    "side": primary_fill.execution.side,
+                    "quantity": int(filled_shares),
+                    "totalQuantity": int(target_qty),
+                    "quantityDisplay": qty_display,
+                    "isPartial": is_partial,
+                    "price": round(avg_price, 4),
+                    "time": latest_time.isoformat() if latest_time else None,
+                    "commission": round(tot_comm, 4),
+                    "realizedPnL": (round(tot_pnl, 2) if tot_pnl is not None else None),
+                    "currency": primary_contract.currency or "USD",
+                    "subExecutions": sub_executions,
                 }
             )
 
         # Sort by time descending (most recent first)
-        executions.sort(key=lambda e: e["time"] or "", reverse=True)
-        return executions
+        grouped_executions.sort(key=lambda e: e["time"] or "", reverse=True)
+        return grouped_executions
 
     # ------------------------------------------------------------------
     # P&L summary
