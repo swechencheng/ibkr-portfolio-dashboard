@@ -760,14 +760,17 @@ class IbkrPortfolio:
                     await self.ib.qualifyContractsAsync(*leg_contracts)
                     desc_parts = []
                     for leg, c in zip(contract.comboLegs, leg_contracts):
+                        sign = (
+                            "+"
+                            if leg.action == "BUY"
+                            else ("-" if leg.action == "SELL" else leg.action)
+                        )
                         if c.strike:
                             desc_parts.append(
-                                f"{leg.action} {leg.ratio}x {c.strike}{c.right}"
+                                f"{sign}{leg.ratio} x {c.strike}{c.right}"
                             )
                         else:
-                            desc_parts.append(
-                                f"{leg.action} {leg.ratio}x {c.localSymbol}"
-                            )
+                            desc_parts.append(f"{sign}{leg.ratio} x {c.localSymbol}")
 
                     if desc_parts:
                         local_symbol_resolved = (
@@ -1023,9 +1026,9 @@ class IbkrPortfolio:
                     unique_legs = {}
                     for lf in leg_fills:
                         lc = lf.contract
-                        act = "BUY" if lf.execution.side == "BOT" else "SELL"
+                        act = "+" if lf.execution.side == "BOT" else "-"
                         k = (act, lc.strike, lc.right)
-                        unique_legs[k] = f"{act} 1x {lc.strike}{lc.right}"
+                        unique_legs[k] = f"{act}1 x {lc.strike}{lc.right}"
                     desc = ", ".join(unique_legs.values())
                     local_symbol_resolved = f"{symbol_resolved} ({desc})"
 

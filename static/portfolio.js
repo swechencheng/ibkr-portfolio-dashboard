@@ -40,6 +40,15 @@ let wsReconnectTimer = null;
 
 // ── Formatters ─────────────────────────────────────────────────
 
+function formatComboSymbol(str) {
+  if (!str) return '';
+  return str
+    .replace(/\bBUY\s+(\d+x)/g, '+$1')
+    .replace(/\bSELL\s+(\d+x)/g, '-$1')
+    .replace(/\bBUY\b/g, '+')
+    .replace(/\bSELL\b/g, '-');
+}
+
 function formatNumber(val, decimals = 2) {
   if (val == null || isNaN(val)) return '—';
   return Number(val).toLocaleString('en-US', {
@@ -634,7 +643,7 @@ function renderOrders() {
   }
 
   tbody.innerHTML = sorted.map(o => {
-    const symbol = o.localSymbol || o.symbol;
+    const symbol = formatComboSymbol(o.localSymbol || o.symbol);
     const priceStr = o.price != null ? formatNumber(o.price, 2) : '—';
     const canCancel = o.status && !o.status.toLowerCase().includes('cancel') && !o.status.toLowerCase().includes('fill');
 
@@ -699,7 +708,7 @@ function renderExecutions() {
         ${hasSubs ? `<span class="combo-icon">▶</span>` : ''}
         ${formatTime(e.time)}
       </td>
-      <td><strong>${e.localSymbol || e.symbol}</strong></td>
+      <td><strong>${formatComboSymbol(e.localSymbol || e.symbol)}</strong></td>
       <td class="num ${pnlClass(e.realizedPnL)}">${e.realizedPnL != null ? formatPnL(e.realizedPnL, 2) : '—'}</td>
       <td class="num" style="color:var(--text-dim)">${e.commission ? formatNumber(e.commission, 2) : '—'}</td>
       <td class="num">${formatNumber(e.price, 2)}</td>
@@ -711,7 +720,7 @@ function renderExecutions() {
       e.subExecutions.forEach(sub => {
         html += `<tr class="sub-exec-row sub-exec-${execId} ${expandedClass}">
           <td class="mono" style="color:var(--text-dim)">${formatTime(sub.time)}</td>
-          <td style="color:var(--text-secondary)">${sub.localSymbol || sub.symbol}</td>
+          <td style="color:var(--text-secondary)">${formatComboSymbol(sub.localSymbol || sub.symbol)}</td>
           <td class="num ${pnlClass(sub.realizedPnL)}">${sub.realizedPnL != null ? formatPnL(sub.realizedPnL, 2) : '—'}</td>
           <td class="num" style="color:var(--text-dim)">${sub.commission ? formatNumber(sub.commission, 2) : '—'}</td>
           <td class="num">${formatNumber(sub.price, 2)}</td>
