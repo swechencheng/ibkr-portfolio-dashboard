@@ -120,6 +120,7 @@ class IBKREnvironment:
 
     def on_exec_update(self, trade, fill):
         self._schedule_exec_broadcast()
+        self.on_order_update(trade)
 
     def on_commission_update(self, trade, fill, report):
         self._schedule_exec_broadcast()
@@ -262,7 +263,9 @@ async def cancel_order(env_name: str, req: CancelOrderReq):
     env = envs.get(env_name)
     if env and env.ib.isConnected():
         for trade in env.ib.openTrades():
-            if trade.order.orderId == req.orderId:
+            if trade.order.orderId == req.orderId or (
+                req.orderId and getattr(trade.order, "permId", None) == req.orderId
+            ):
                 env.ib.cancelOrder(trade.order)
                 return {"status": "success"}
     return {"status": "error", "detail": "Order not found or IB disconnected"}

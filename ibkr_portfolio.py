@@ -15,7 +15,7 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from ib_async import IB, Contract, Stock
+from ib_async import IB, Contract, Stock, OrderStatus
 import ib_async.wrapper
 
 LOGGER = logging.getLogger("ibkr_portfolio")
@@ -791,11 +791,30 @@ class IbkrPortfolio:
         """
         Return all open/active orders across all contracts.
 
-        Returns a list of dicts with order details suitable for frontend rendering.
+        Cross-references execution fills to filter out fulfilled orders (including
+        combo/BAG orders whose order status may linger as 'Submitted' in IBKR Gateway).
         """
+        # Ensure executions are synced if connected
+        try:
+            if self.ib.isConnected():
+                await self.ib.reqExecutionsAsync()
+        except Exception as e:
+            LOGGER.warning(f"Error syncing executions in get_open_orders_async: {e}")
+
+        fills = self.ib.fills()
+        fills_by_perm: Dict[int, list] = {}
+        fills_by_order_id: Dict[int, list] = {}
+        for f in fills:
+            pid = getattr(f.execution, "permId", 0)
+            if pid:
+                fills_by_perm.setdefault(pid, []).append(f)
+            oid = getattr(f.execution, "orderId", 0)
+            if oid:
+                fills_by_order_id.setdefault(oid, []).append(f)
+
         orders = []
         for trade in self.ib.openTrades():
-            if not trade.isActive():
+            if trade.isDone() or trade.orderStatus.status in OrderStatus.DoneStates:
                 continue
 
             order = trade.order
@@ -803,6 +822,38 @@ class IbkrPortfolio:
                 continue
 
             contract = trade.contract
+            total_qty = float(order.totalQuantity or 0.0)
+
+            # Retrieve fills matching this order by permId (or orderId fallback)
+            p_fills = fills_by_perm.get(order.permId)
+            if p_fills is None and order.orderId:
+                p_fills = fills_by_order_id.get(order.orderId, [])
+            if p_fills is None:
+                p_fills = []
+
+            is_combo = contract.secType == "BAG"
+            bag_fills = []
+            single_fills = []
+            if is_combo:
+                bag_fills = [f for f in p_fills if f.contract.secType == "BAG"]
+                if bag_fills:
+                    filled_shares = sum(f.execution.shares for f in bag_fills)
+                else:
+                    leg_fills = [f for f in p_fills if f.contract.secType != "BAG"]
+                    num_legs = len(contract.comboLegs) if contract.comboLegs else 1
+                    filled_shares = (
+                        sum(f.execution.shares for f in leg_fills) / num_legs
+                    )
+            else:
+                single_fills = [f for f in p_fills if f.contract.secType != "BAG"]
+                filled_shares = sum(f.execution.shares for f in single_fills)
+
+            filled_shares = max(float(trade.orderStatus.filled or 0.0), filled_shares)
+            remaining_shares = max(0.0, total_qty - filled_shares)
+
+            # Skip fulfilled orders
+            if total_qty > 0 and (filled_shares >= total_qty or remaining_shares <= 0):
+                continue
 
             price = None
             if order.orderType == "STP":
@@ -827,6 +878,22 @@ class IbkrPortfolio:
                 await self._resolve_contract_symbol_async(contract)
             )
 
+            avg_fill_price = None
+            if trade.orderStatus.avgFillPrice:
+                avg_fill_price = float(trade.orderStatus.avgFillPrice)
+            elif is_combo and bag_fills:
+                tot_val = sum(f.execution.price * f.execution.shares for f in bag_fills)
+                tot_sh = sum(f.execution.shares for f in bag_fills)
+                if tot_sh > 0:
+                    avg_fill_price = float(tot_val / tot_sh)
+            elif not is_combo and single_fills:
+                tot_val = sum(
+                    f.execution.price * f.execution.shares for f in single_fills
+                )
+                tot_sh = sum(f.execution.shares for f in single_fills)
+                if tot_sh > 0:
+                    avg_fill_price = float(tot_val / tot_sh)
+
             orders.append(
                 {
                     "orderId": order.orderId,
@@ -836,20 +903,16 @@ class IbkrPortfolio:
                     "secType": contract.secType or "",
                     "action": order.action,
                     "orderType": order.orderType,
-                    "totalQuantity": int(order.totalQuantity),
+                    "totalQuantity": int(total_qty),
                     "price": price,
                     "status": trade.orderStatus.status,
                     "parentId": parent_id if parent_id else None,
                     "ocaGroup": oca_group if oca_group else None,
                     "tif": order.tif or "",
                     "placedTime": placed_time.isoformat() if placed_time else None,
-                    "filledQuantity": int(trade.orderStatus.filled),
-                    "remaining": int(trade.orderStatus.remaining),
-                    "avgFillPrice": (
-                        float(trade.orderStatus.avgFillPrice)
-                        if trade.orderStatus.avgFillPrice
-                        else None
-                    ),
+                    "filledQuantity": int(filled_shares),
+                    "remaining": int(remaining_shares),
+                    "avgFillPrice": avg_fill_price,
                 }
             )
 
