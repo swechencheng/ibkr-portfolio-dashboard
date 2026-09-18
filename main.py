@@ -231,10 +231,16 @@ async def get_summary(env_name: str):
 async def get_positions(env_name: str):
     env = envs.get(env_name)
     if env and env.portfolio and env.ib.isConnected():
-        return {
-            "positions": env.portfolio.get_portfolio_positions(),
-            "pnl": env.portfolio.get_pnl_summary(),
-        }
+        try:
+            return {
+                "positions": env.portfolio.get_portfolio_positions(),
+                "pnl": env.portfolio.get_pnl_summary(),
+            }
+        except Exception as e:
+            LOGGER.error(
+                f"[{env_name}] Error getting portfolio positions: {e}", exc_info=True
+            )
+            return {"positions": [], "pnl": {}, "error": str(e)}
     return {"positions": [], "pnl": {}}
 
 
