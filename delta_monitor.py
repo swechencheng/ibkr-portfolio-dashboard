@@ -45,6 +45,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
 )
 LOGGER = logging.getLogger("delta_monitor")
+logging.getLogger("ib_async").setLevel(logging.WARNING)
 
 # ---------------------------------------------------------------------------
 # Config
