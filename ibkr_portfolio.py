@@ -842,6 +842,7 @@ class IbkrPortfolio:
         try:
             if self.ib.isConnected():
                 await self.ib.reqExecutionsAsync()
+                await self.ib.reqAllOpenOrdersAsync()
         except Exception as e:
             LOGGER.warning(f"Error syncing executions in get_open_orders_async: {e}")
 
