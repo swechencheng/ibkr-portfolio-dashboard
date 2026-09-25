@@ -140,15 +140,6 @@ Time: 2026-09-03 14:30:00 UTC
 venv/bin/python delta_monitor.py
 ```
 
-**As a macOS background service (launchd):**
-
-```bash
-cp com.user.ibkr_delta_monitor.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.user.ibkr_delta_monitor.plist
-```
-
-Logs are written to `delta_monitor.log` and `delta_monitor_error.log`.
-
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
