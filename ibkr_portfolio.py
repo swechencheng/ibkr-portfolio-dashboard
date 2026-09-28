@@ -33,6 +33,30 @@ def _patched_contractDetails(self, reqId: int, contractDetails):
 ib_async.wrapper.Wrapper.contractDetails = _patched_contractDetails
 
 
+def _calculate_dte(expiry_str: Optional[str]) -> Optional[int]:
+    """Calculate Days To Expiration (DTE) from an IBKR expiry string.
+
+    IBKR typically uses YYYYMMDD (e.g. '20261016') or YYYYMMDD HH:MM:SS.
+    Returns 0 for expiring today, positive integer for future expiration,
+    or None if invalid/absent.
+    """
+    if not expiry_str:
+        return None
+    try:
+        clean = expiry_str.strip().split()[0]
+        if len(clean) == 8 and clean.isdigit():
+            exp_date = datetime.strptime(clean, "%Y%m%d").date()
+        elif "-" in clean:
+            exp_date = datetime.strptime(clean[:10], "%Y-%m-%d").date()
+        else:
+            return None
+        today = date.today()
+        diff = (exp_date - today).days
+        return max(0, diff)
+    except Exception:
+        return None
+
+
 class IbkrPortfolio:
     """
     Read-only portfolio data provider for an existing ib_async IB connection.
@@ -557,6 +581,8 @@ class IbkrPortfolio:
                             "changePercent": combo_change_pct,
                             "pnlPercent": 0.0,
                             "delta": round(combo_delta, 3) if has_delta else None,
+                            "expiry": exp,
+                            "dte": _calculate_dte(exp),
                             "legs": combo_legs,
                         }
                         if abs(combo.get("avgCost", 0.0)) > 0.0001:
@@ -693,12 +719,14 @@ class IbkrPortfolio:
                 "pnlPercent": round(pnl_pct, 2),
                 "account": item.account or "",
                 "delta": round(delta, 3) if delta is not None else None,
+                "dte": None,
             }
 
             if contract.secType == "OPT" or contract.secType == "FOP":
                 pos_dict["strike"] = contract.strike
                 pos_dict["right"] = contract.right
                 pos_dict["expiry"] = contract.lastTradeDateOrContractMonth
+                pos_dict["dte"] = _calculate_dte(contract.lastTradeDateOrContractMonth)
 
             positions.append(pos_dict)
 

@@ -482,6 +482,33 @@ function updateCellHTML(cell, html, className) {
   if (className && cell.className !== className) cell.className = className;
 }
 
+function getDte(p) {
+  if (p.dte !== null && p.dte !== undefined) {
+    return p.dte;
+  }
+  if ((p.secType === 'OPT' || p.secType === 'FOP' || p.secType === 'COMBO') && p.expiry) {
+    const clean = String(p.expiry).trim().split(/\s+/)[0];
+    let expDate = null;
+    if (/^\d{8}$/.test(clean)) {
+      const y = parseInt(clean.substring(0, 4), 10);
+      const m = parseInt(clean.substring(4, 6), 10) - 1;
+      const d = parseInt(clean.substring(6, 8), 10);
+      expDate = new Date(y, m, d);
+    } else if (/^\d{4}-\d{2}-\d{2}/.test(clean)) {
+      const parts = clean.split('-');
+      expDate = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    }
+    if (expDate && !isNaN(expDate.getTime())) {
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const diffMs = expDate.getTime() - today.getTime();
+      const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+      return Math.max(0, diffDays);
+    }
+  }
+  return null;
+}
+
 function updatePositionRowDOM(row, p, isLeg = false) {
   const symbol = p.localSymbol || p.symbol;
   const posClass = p.position > 0 ? 'positive' : p.position < 0 ? 'negative' : '';
@@ -495,7 +522,7 @@ function updatePositionRowDOM(row, p, isLeg = false) {
   state.previousPnL[symbol] = p.unrealizedPnL;
 
   const cells = row.children;
-  if (cells.length < 10) return;
+  if (cells.length < 11) return;
 
   // Change %
   updateCell(cells[1], formatPercent(p.changePercent), `num cell-change ${pnlClass(p.changePercent)}`);
@@ -507,23 +534,26 @@ function updatePositionRowDOM(row, p, isLeg = false) {
   updateCell(cells[4], formatNumber(p.avgPrice, 2), 'num cell-avg-price');
   // Delta
   updateCell(cells[5], p.delta !== null && p.delta !== undefined ? formatNumber(p.delta, 3) : '—', 'num cell-delta');
+  // DTE
+  const dteVal = getDte(p);
+  updateCell(cells[6], dteVal !== null && dteVal !== undefined ? String(dteVal) : '—', 'num cell-dte');
   // Position
-  updateCell(cells[6], formatNumber(p.position, 0), `num cell-pos ${posClass}`);
+  updateCell(cells[7], formatNumber(p.position, 0), `num cell-pos ${posClass}`);
   // Mkt Value
-  updateCell(cells[7], formatCurrency(p.marketValue, 0), 'num cell-mkt-val');
+  updateCell(cells[8], formatCurrency(p.marketValue, 0), 'num cell-mkt-val');
   // Unrealized P&L (with sparkline bar)
   const pnlHtml = isLeg
     ? formatPnL(p.unrealizedPnL, 0)
     : `${formatPnL(p.unrealizedPnL, 0)}${pnlBar(p.pnlPercent)}`;
   const pnlCls = `num cell-unrealized ${pnlClass(p.unrealizedPnL)}${flashClass ? ' ' + flashClass : ''}`;
-  updateCellHTML(cells[8], pnlHtml, pnlCls);
+  updateCellHTML(cells[9], pnlHtml, pnlCls);
   if (flashClass) {
     setTimeout(() => {
-      cells[8].classList.remove('flash-positive', 'flash-negative');
+      cells[9].classList.remove('flash-positive', 'flash-negative');
     }, 800);
   }
   // Realized P&L
-  updateCell(cells[9], formatPnL(p.realizedPnL, 0), `num cell-realized ${pnlClass(p.realizedPnL)}`);
+  updateCell(cells[10], formatPnL(p.realizedPnL, 0), `num cell-realized ${pnlClass(p.realizedPnL)}`);
 }
 
 function renderPositionRowHTML(p) {
@@ -534,6 +564,7 @@ function renderPositionRowHTML(p) {
   const isExpanded = isCombo && state.expandedCombos.has(rowId);
   const expandedClass = isExpanded ? 'expanded' : '';
   const posClass = p.position > 0 ? 'positive' : p.position < 0 ? 'negative' : '';
+  const dteVal = getDte(p);
 
   let trHtml = `<tr id="${rowId}" class="${isCombo ? 'combo-row' : ''} ${expandedClass}" ${isCombo ? `data-combo-id="${rowId}"` : ''}>
     <td class="cell-symbol">
@@ -546,6 +577,7 @@ function renderPositionRowHTML(p) {
     <td class="num cell-price">${p.marketPrice ? formatNumber(p.marketPrice, 2) : '—'}</td>
     <td class="num cell-avg-price">${formatNumber(p.avgPrice, 2)}</td>
     <td class="num cell-delta">${p.delta !== null && p.delta !== undefined ? formatNumber(p.delta, 3) : '—'}</td>
+    <td class="num cell-dte">${dteVal !== null && dteVal !== undefined ? dteVal : '—'}</td>
     <td class="num cell-pos ${posClass}">${formatNumber(p.position, 0)}</td>
     <td class="num cell-mkt-val">${formatCurrency(p.marketValue, 0)}</td>
     <td class="num cell-unrealized ${pnlClass(p.unrealizedPnL)}">${formatPnL(p.unrealizedPnL, 0)}${pnlBar(p.pnlPercent)}</td>
@@ -557,6 +589,7 @@ function renderPositionRowHTML(p) {
     const legsHtml = p.legs.map((leg, idx) => {
       const legSymbol = leg.localSymbol || leg.symbol;
       const legPosClass = leg.position > 0 ? 'positive' : leg.position < 0 ? 'negative' : '';
+      const legDte = getDte(leg);
       return `<tr id="${rowId}-leg-${idx}" class="leg-row leg-${rowId} ${expandedClass}">
         <td class="cell-symbol">${legSymbol}</td>
         <td class="num cell-change ${pnlClass(leg.changePercent)}">${formatPercent(leg.changePercent)}</td>
@@ -564,6 +597,7 @@ function renderPositionRowHTML(p) {
         <td class="num cell-price">${formatNumber(leg.marketPrice, 2)}</td>
         <td class="num cell-avgPrice">${formatNumber(leg.avgPrice, 2)}</td>
         <td class="num cell-delta">${leg.delta !== null && leg.delta !== undefined ? formatNumber(leg.delta, 3) : '—'}</td>
+        <td class="num cell-dte">${legDte !== null && legDte !== undefined ? legDte : '—'}</td>
         <td class="num cell-pos ${legPosClass}">${formatNumber(leg.position, 0)}</td>
         <td class="num cell-mkt-val">${formatCurrency(leg.marketValue, 0)}</td>
         <td class="num cell-unrealized ${pnlClass(leg.unrealizedPnL)}">${formatPnL(leg.unrealizedPnL, 0)}</td>
@@ -585,7 +619,7 @@ function renderPositions() {
   countBadge.textContent = sorted.length;
 
   if (sorted.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="11" class="empty-state"><div class="empty-icon">📭</div>No positions</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" class="empty-state"><div class="empty-icon">📭</div>No positions</td></tr>';
     return;
   }
 
@@ -743,10 +777,11 @@ function sortData(data, config) {
   const mult = dir === 'asc' ? 1 : -1;
 
   arr.sort((a, b) => {
-    let va = a[key];
-    let vb = b[key];
-    if (va == null) va = '';
-    if (vb == null) vb = '';
+    let va = a[key] !== undefined ? a[key] : (key === 'dte' ? getDte(a) : null);
+    let vb = b[key] !== undefined ? b[key] : (key === 'dte' ? getDte(b) : null);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
     if (typeof va === 'number' && typeof vb === 'number') {
       return (va - vb) * mult;
     }
