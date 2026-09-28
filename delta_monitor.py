@@ -40,9 +40,12 @@ ib_async.wrapper.Wrapper.contractDetails = _patched_contractDetails
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+import sys
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+    stream=sys.stdout,
 )
 LOGGER = logging.getLogger("delta_monitor")
 logging.getLogger("ib_async").setLevel(logging.WARNING)
@@ -211,8 +214,12 @@ class DeltaMonitorEnv:
 
                 await self._check_deltas()
 
+            except (ConnectionRefusedError, TimeoutError) as e:
+                LOGGER.warning(
+                    f"[{self.label}] Connection failed: {e}. Retrying in {self.poll_interval}s..."
+                )
             except Exception as e:
-                LOGGER.error(f"[{self.label}] Error: {e}", exc_info=True)
+                LOGGER.error(f"[{self.label}] Unexpected error: {e}", exc_info=True)
 
             await asyncio.sleep(self.poll_interval)
 
