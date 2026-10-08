@@ -434,7 +434,7 @@ function getComboId(symbol) {
 
 function getPosRowId(p) {
   if (p.secType === 'COMBO') {
-    return getComboId(p.localSymbol || p.symbol);
+    return 'combo-' + (p.conId ? String(p.conId) : (p.localSymbol || p.symbol)).replace(/[^a-zA-Z0-9]/g, '-');
   }
   if (p.secType === 'CASH') {
     return 'cash-' + (p.symbol || 'curr');

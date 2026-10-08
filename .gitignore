@@ -6,3 +6,4 @@ venv/
 *.log
 scratch/
 .tg_bot_secret.json
+.combos_cache*.json

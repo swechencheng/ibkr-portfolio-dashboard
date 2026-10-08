@@ -11,7 +11,9 @@ This module wraps an existing IB connection instance and provides
 JSON-serializable dicts suitable for the portfolio frontend.
 """
 
+import json
 import logging
+import os
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
@@ -43,7 +45,7 @@ def _calculate_dte(expiry_str: Optional[str]) -> Optional[int]:
     if not expiry_str:
         return None
     try:
-        clean = expiry_str.strip().split()[0]
+        clean = expiry_str.strip().split()[0].split("/")[0]
         if len(clean) == 8 and clean.isdigit():
             exp_date = datetime.strptime(clean, "%Y%m%d").date()
         elif "-" in clean:
@@ -74,6 +76,12 @@ class IbkrPortfolio:
         self._prior_close_cache: Dict[int, float] = {}
         self._prior_close_fetching: Set[int] = set()
         self._prior_close_cache_date: Optional[str] = None
+        self._combos_cache_file = (
+            f".combos_cache_{self.account}.json"
+            if self.account
+            else ".combos_cache.json"
+        )
+        self._known_combos: List[Dict[str, Any]] = self._load_known_combos()
 
         # Subscribe to account and portfolio updates so that
         # ib.accountValues() and ib.portfolio() are populated.
@@ -83,6 +91,186 @@ class IbkrPortfolio:
         asyncio.create_task(self._subscribe_async())
         asyncio.create_task(self._poll_executions())
 
+    def _load_known_combos(self) -> List[Dict[str, Any]]:
+        if os.path.exists(self._combos_cache_file):
+            try:
+                with open(self._combos_cache_file, "r") as f:
+                    combos = json.load(f)
+                    if isinstance(combos, list):
+                        return combos
+            except Exception as e:
+                LOGGER.warning(
+                    f"Failed to load combo cache from {self._combos_cache_file}: {e}"
+                )
+        return []
+
+    def _save_known_combos(self) -> None:
+        try:
+            with open(self._combos_cache_file, "w") as f:
+                json.dump(self._known_combos, f, indent=2)
+        except Exception as e:
+            LOGGER.warning(
+                f"Failed to save combo cache to {self._combos_cache_file}: {e}"
+            )
+
+    def _update_known_combos(self) -> None:
+        try:
+            seen_keys = {
+                (
+                    c.get("symbol", ""),
+                    tuple(
+                        sorted(
+                            (l["conId"], l["sign"], l.get("ratio", 1))
+                            for l in c.get("legs", [])
+                        )
+                    ),
+                )
+                for c in self._known_combos
+            }
+            new_added = False
+
+            # 1. From execution fills
+            fills = self.ib.fills()
+            if fills:
+                fills_by_group: Dict[Any, list] = {}
+                for f in fills:
+                    exec_ = f.execution
+                    if self.account and exec_.acctNumber != self.account:
+                        continue
+                    pid = (
+                        getattr(exec_, "permId", 0)
+                        or f"oid_{exec_.orderId}_{f.contract.symbol}"
+                    )
+                    fills_by_group.setdefault(pid, []).append(f)
+
+                for pid, gfills in fills_by_group.items():
+                    bag_fills = [f for f in gfills if f.contract.secType == "BAG"]
+                    if not bag_fills:
+                        continue
+                    leg_fills = [f for f in gfills if f.contract.secType != "BAG"]
+                    primary = bag_fills[0]
+                    sym = primary.contract.symbol
+                    legs = []
+
+                    if leg_fills:
+                        by_con: Dict[int, Any] = {}
+                        for lf in leg_fills:
+                            cid = lf.contract.conId
+                            side = 1 if lf.execution.side == "BOT" else -1
+                            by_con.setdefault(
+                                cid,
+                                {
+                                    "contract": lf.contract,
+                                    "side": side,
+                                    "shares": 0.0,
+                                },
+                            )
+                            by_con[cid]["shares"] += lf.execution.shares
+
+                        min_sh = (
+                            min(v["shares"] for v in by_con.values())
+                            if by_con
+                            else 1.0
+                        )
+                        if min_sh <= 0:
+                            min_sh = 1.0
+
+                        for cid, v in by_con.items():
+                            c = v["contract"]
+                            ratio = max(1, int(round(v["shares"] / min_sh)))
+                            legs.append(
+                                {
+                                    "conId": cid,
+                                    "sign": v["side"],
+                                    "ratio": ratio,
+                                    "strike": getattr(c, "strike", 0.0),
+                                    "right": getattr(c, "right", ""),
+                                    "expiry": getattr(
+                                        c, "lastTradeDateOrContractMonth", ""
+                                    ),
+                                }
+                            )
+                    elif getattr(primary.contract, "comboLegs", None):
+                        bag_side = 1 if primary.execution.side == "BOT" else -1
+                        for cl in primary.contract.comboLegs:
+                            leg_act = 1 if cl.action == "BUY" else -1
+                            legs.append(
+                                {
+                                    "conId": cl.conId,
+                                    "sign": bag_side * leg_act,
+                                    "ratio": cl.ratio,
+                                }
+                            )
+
+                    if legs:
+                        key = (
+                            sym,
+                            tuple(
+                                sorted(
+                                    (l["conId"], l["sign"], l.get("ratio", 1))
+                                    for l in legs
+                                )
+                            ),
+                        )
+                        if key not in seen_keys:
+                            seen_keys.add(key)
+                            self._known_combos.append(
+                                {
+                                    "permId": getattr(primary.execution, "permId", 0),
+                                    "symbol": sym,
+                                    "legs": legs,
+                                }
+                            )
+                            new_added = True
+
+            # 2. From trades / openTrades
+            for trade in list(self.ib.trades()) + list(self.ib.openTrades()):
+                if (
+                    self.account
+                    and getattr(trade.order, "account", None)
+                    and trade.order.account != self.account
+                ):
+                    continue
+                if trade.contract.secType == "BAG" and getattr(
+                    trade.contract, "comboLegs", None
+                ):
+                    order_action = 1 if trade.order.action == "BUY" else -1
+                    legs = []
+                    for cl in trade.contract.comboLegs:
+                        leg_act = 1 if cl.action == "BUY" else -1
+                        legs.append(
+                            {
+                                "conId": cl.conId,
+                                "sign": order_action * leg_act,
+                                "ratio": cl.ratio,
+                            }
+                        )
+                    if legs:
+                        key = (
+                            trade.contract.symbol,
+                            tuple(
+                                sorted(
+                                    (l["conId"], l["sign"], l.get("ratio", 1))
+                                    for l in legs
+                                )
+                            ),
+                        )
+                        if key not in seen_keys:
+                            seen_keys.add(key)
+                            self._known_combos.append(
+                                {
+                                    "permId": getattr(trade.order, "permId", 0),
+                                    "symbol": trade.contract.symbol,
+                                    "legs": legs,
+                                }
+                            )
+                            new_added = True
+
+            if new_added:
+                self._save_known_combos()
+        except Exception as e:
+            LOGGER.warning(f"Error updating known combos: {e}", exc_info=True)
+
     async def _poll_executions(self):
         import asyncio
 
@@ -91,6 +279,7 @@ class IbkrPortfolio:
             try:
                 if self.ib.isConnected():
                     await self.ib.reqExecutionsAsync()
+                    self._update_known_combos()
             except Exception as e:
                 LOGGER.warning(f"Failed to poll executions: {e}")
 
@@ -112,6 +301,7 @@ class IbkrPortfolio:
 
             # Fetch recent executions
             await self.ib.reqExecutionsAsync()
+            self._update_known_combos()
 
             # Subscribe to market data for all portfolio positions
             self.subscribe_market_data()
@@ -350,254 +540,436 @@ class IbkrPortfolio:
     # Portfolio positions
     # ------------------------------------------------------------------
 
+    def _identify_strategy_name(self, combo_legs: List[Dict[str, Any]]) -> str:
+        legs = sorted(combo_legs, key=lambda x: x.get("strike", 0.0))
+        puts = [l for l in legs if l.get("right") == "P"]
+        calls = [l for l in legs if l.get("right") == "C"]
+
+        # 4-leg strategies
+        if len(legs) == 4 and len(puts) == 2 and len(calls) == 2:
+            lp = next((l for l in puts if l["position"] > 0), None)
+            sp = next((l for l in puts if l["position"] < 0), None)
+            sc = next((l for l in calls if l["position"] < 0), None)
+            lc = next((l for l in calls if l["position"] > 0), None)
+            if lp and sp and sc and lc:
+                if lp["strike"] <= sp["strike"] <= sc["strike"] <= lc["strike"]:
+                    return (
+                        "Iron Butterfly"
+                        if sp["strike"] == sc["strike"]
+                        else "Iron Condor"
+                    )
+                elif sp["strike"] <= lp["strike"] <= lc["strike"] <= sc["strike"]:
+                    return "Reverse Iron Condor"
+            return "Iron Condor"
+
+        if len(legs) == 4 and (len(puts) == 4 or len(calls) == 4):
+            return "Condor"
+
+        # 2-leg strategies
+        if len(legs) == 2:
+            if len(puts) == 2:
+                lp = next((l for l in puts if l["position"] > 0), None)
+                sp = next((l for l in puts if l["position"] < 0), None)
+                if lp and sp:
+                    return (
+                        "Bull Put Spread"
+                        if lp["strike"] < sp["strike"]
+                        else "Bear Put Spread"
+                    )
+            elif len(calls) == 2:
+                lc = next((l for l in calls if l["position"] > 0), None)
+                sc = next((l for l in calls if l["position"] < 0), None)
+                if lc and sc:
+                    return (
+                        "Bull Call Spread"
+                        if lc["strike"] < sc["strike"]
+                        else "Bear Call Spread"
+                    )
+            elif len(puts) == 1 and len(calls) == 1:
+                p = puts[0]
+                c = calls[0]
+                if p["position"] > 0 and c["position"] > 0:
+                    return "Straddle" if p["strike"] == c["strike"] else "Strangle"
+                elif p["position"] < 0 and c["position"] < 0:
+                    return (
+                        "Short Straddle"
+                        if p["strike"] == c["strike"]
+                        else "Short Strangle"
+                    )
+                elif p["position"] < 0 and c["position"] > 0:
+                    return "Risk Reversal"
+                elif p["position"] > 0 and c["position"] < 0:
+                    return "Collar"
+
+        return "COMBO"
+
+    def _build_combo_position(
+        self,
+        sym: str,
+        exp: str,
+        name: str,
+        combo_legs: List[Dict[str, Any]],
+        min_abs_pos: float,
+    ) -> Dict[str, Any]:
+        combo_legs.sort(key=lambda x: x.get("strike", 0.0))
+
+        combo_prev_close = 0.0
+        combo_current_price = 0.0
+        has_prev_close = True
+        combo_market_price = 0.0
+        combo_avg_price = 0.0
+        combo_delta = 0.0
+        has_delta = False
+        multiplier_val = combo_legs[0].get("multiplier", 100.0)
+
+        for c in combo_legs:
+            rel_pos = (c["position"] / min_abs_pos) if min_abs_pos else 1.0
+
+            combo_market_price += (c.get("marketPrice") or 0.0) * rel_pos
+            combo_avg_price += (c.get("avgPrice") or 0.0) * rel_pos
+
+            leg_delta = c.get("delta")
+            if leg_delta is not None:
+                has_delta = True
+                combo_delta += leg_delta * rel_pos
+
+            close_px = c.get("closePrice")
+            chg_pct = c.get("changePercent")
+            mkt_px = c.get("marketPrice")
+            if close_px is not None and close_px > 0:
+                prev_close = close_px
+                combo_prev_close += prev_close * rel_pos
+                combo_current_price += (mkt_px or 0.0) * rel_pos
+            elif (
+                chg_pct is not None
+                and mkt_px is not None
+                and abs(1 + chg_pct / 100) > 0.0001
+            ):
+                prev_close = mkt_px / (1 + chg_pct / 100)
+                combo_prev_close += prev_close * rel_pos
+                combo_current_price += mkt_px * rel_pos
+            else:
+                has_prev_close = False
+
+        combo_change_pct = None
+        if has_prev_close and abs(combo_prev_close) > 0.0001:
+            combo_change_pct = round(
+                (combo_current_price - combo_prev_close)
+                / abs(combo_prev_close)
+                * 100,
+                2,
+            )
+
+        local_sym = f"{sym} {name} {exp}" if exp else f"{sym} {name}"
+        combo = {
+            "conId": "-".join(str(c["conId"]) for c in combo_legs),
+            "symbol": sym,
+            "localSymbol": local_sym,
+            "secType": "COMBO",
+            "exchange": combo_legs[0].get("exchange", "SMART"),
+            "currency": combo_legs[0].get("currency", "USD"),
+            "multiplier": multiplier_val,
+            "position": min_abs_pos,
+            "marketPrice": round(combo_market_price, 4),
+            "marketValue": sum(c.get("marketValue", 0.0) for c in combo_legs),
+            "avgCost": sum(c.get("avgCost", 0.0) for c in combo_legs),
+            "avgPrice": round(combo_avg_price, 4),
+            "unrealizedPnL": sum(c.get("unrealizedPnL", 0.0) for c in combo_legs),
+            "realizedPnL": sum(c.get("realizedPnL", 0.0) for c in combo_legs),
+            "changePercent": combo_change_pct,
+            "pnlPercent": 0.0,
+            "delta": round(combo_delta, 3) if has_delta else None,
+            "expiry": exp,
+            "dte": _calculate_dte(exp),
+            "legs": combo_legs,
+        }
+        if abs(combo.get("avgCost", 0.0)) > 0.0001:
+            combo["pnlPercent"] = round(
+                combo["unrealizedPnL"] / abs(combo["avgCost"]) * 100,
+                2,
+            )
+        return combo
+
     def _group_option_strategies(
         self, positions: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         import collections
 
         try:
+            self._update_known_combos()
+
             options = [p for p in positions if p.get("secType") in ("OPT", "FOP")]
             others = [p for p in positions if p.get("secType") not in ("OPT", "FOP")]
 
-            groups = collections.defaultdict(list)
+            final_positions = list(others)
+
+            # Group options by symbol first to allow matching known combos
+            by_sym = collections.defaultdict(list)
             for o in options:
-                sym = o.get("symbol", "")
-                exp = o.get("expiry", "")
-                groups[(sym, exp)].append(o)
+                by_sym[o.get("symbol", "")].append(o)
 
-            final_positions = others
+            for sym, sym_options in by_sym.items():
+                legs = [l for l in sym_options if l.get("position", 0) != 0]
 
-            for (sym, exp), legs in groups.items():
-                legs = [l for l in legs if l["position"] != 0]
+                # Phase 1: Match against known executed combos
+                known = [c for c in self._known_combos if c.get("symbol") == sym]
+                known.sort(key=lambda c: len(c.get("legs", [])), reverse=True)
 
-                while len(legs) > 1:
-                    legs.sort(key=lambda x: x.get("strike", 0))
-                    matched = False
-                    match_indices = []
-                    name = ""
+                for kc in known:
+                    req_legs = kc.get("legs", [])
+                    if len(req_legs) < 2:
+                        continue
 
-                    # 1. Iron Condor
-                    lp = sp = sc = lc = -1
-                    for i, l in enumerate(legs):
-                        if l["right"] == "P" and l["position"] > 0 and lp == -1:
-                            lp = i
-                        elif l["right"] == "P" and l["position"] < 0 and sp == -1:
-                            sp = i
-                        elif l["right"] == "C" and l["position"] < 0 and sc == -1:
-                            sc = i
-                        elif l["right"] == "C" and l["position"] > 0 and lc == -1:
-                            lc = i
+                    while True:
+                        match_indices = []
+                        possible = True
+                        for req in req_legs:
+                            req_con = req["conId"]
+                            req_sign = req["sign"]
+                            req_ratio = req.get("ratio", 1)
+                            found_idx = -1
+                            for idx, leg in enumerate(legs):
+                                if idx in match_indices:
+                                    continue
+                                if (
+                                    leg.get("conId") == req_con
+                                    and leg.get("position", 0) * req_sign > 0
+                                ):
+                                    if abs(leg.get("position", 0)) >= req_ratio:
+                                        found_idx = idx
+                                        break
+                            if found_idx != -1:
+                                match_indices.append(found_idx)
+                            else:
+                                possible = False
+                                break
 
-                    if lp != -1 and sp != -1 and sc != -1 and lc != -1:
-                        if (
-                            legs[lp]["strike"]
-                            <= legs[sp]["strike"]
-                            <= legs[sc]["strike"]
-                            <= legs[lc]["strike"]
+                        if not possible:
+                            break
+
+                        extracted_legs = [legs[i] for i in match_indices]
+                        units_possible = []
+                        for req, orig in zip(req_legs, extracted_legs):
+                            ratio = req.get("ratio", 1)
+                            units_possible.append(abs(orig["position"]) // ratio)
+                        min_abs_pos = int(min(units_possible)) if units_possible else 1
+                        if min_abs_pos <= 0:
+                            break
+
+                        combo_legs = []
+                        for i, req in sorted(
+                            zip(match_indices, req_legs),
+                            key=lambda x: x[0],
+                            reverse=True,
                         ):
-                            match_indices = [lp, sp, sc, lc]
-                            name = (
-                                "Iron Butterfly"
-                                if legs[sp]["strike"] == legs[sc]["strike"]
-                                else "Iron Condor"
+                            orig = legs.pop(i)
+                            sign = 1 if orig["position"] > 0 else -1
+                            orig_abs_pos = abs(orig["position"])
+                            req_ratio = req.get("ratio", 1)
+                            take_qty = min_abs_pos * req_ratio
+                            ratio_factor = (
+                                take_qty / orig_abs_pos if orig_abs_pos > 0 else 1.0
                             )
 
-                    # 2. Straddle / Strangle
-                    if not match_indices:
-                        lc = sc = lp = sp = -1
-                        for i, l in enumerate(legs):
-                            if l["right"] == "C" and l["position"] > 0 and lc == -1:
-                                lc = i
-                            elif l["right"] == "P" and l["position"] > 0 and lp == -1:
-                                lp = i
-                            elif l["right"] == "C" and l["position"] < 0 and sc == -1:
-                                sc = i
-                            elif l["right"] == "P" and l["position"] < 0 and sp == -1:
-                                sp = i
-
-                        if lc != -1 and lp != -1:
-                            match_indices = [lc, lp]
-                            name = (
-                                "Straddle"
-                                if legs[lc]["strike"] == legs[lp]["strike"]
-                                else "Strangle"
+                            leg = dict(orig)
+                            leg["position"] = take_qty * sign
+                            leg["marketValue"] = (
+                                orig.get("marketValue", 0.0) * ratio_factor
                             )
-                        elif sc != -1 and sp != -1:
-                            match_indices = [sc, sp]
-                            name = (
-                                "Short Straddle"
-                                if legs[sc]["strike"] == legs[sp]["strike"]
-                                else "Short Strangle"
+                            leg["avgCost"] = orig.get("avgCost", 0.0) * ratio_factor
+                            leg["unrealizedPnL"] = (
+                                orig.get("unrealizedPnL", 0.0) * ratio_factor
                             )
-
-                    # 3. Vertical Spreads
-                    if not match_indices:
-                        lc = sc = -1
-                        for i, l in enumerate(legs):
-                            if l["right"] == "C" and l["position"] > 0 and lc == -1:
-                                lc = i
-                            elif l["right"] == "C" and l["position"] < 0 and sc == -1:
-                                sc = i
-                        if lc != -1 and sc != -1:
-                            match_indices = [lc, sc]
-                            name = (
-                                "Bull Call Spread"
-                                if legs[lc]["strike"] < legs[sc]["strike"]
-                                else "Bear Call Spread"
+                            leg["realizedPnL"] = (
+                                orig.get("realizedPnL", 0.0) * ratio_factor
                             )
+                            combo_legs.append(leg)
 
-                    if not match_indices:
-                        lp = sp = -1
-                        for i, l in enumerate(legs):
+                            if orig_abs_pos > take_qty:
+                                rem = dict(orig)
+                                rem["position"] = orig["position"] - (take_qty * sign)
+                                rem_abs_pos = abs(rem["position"])
+                                rem_ratio = (
+                                    rem_abs_pos / orig_abs_pos
+                                    if orig_abs_pos > 0
+                                    else 1.0
+                                )
+                                rem["marketValue"] = (
+                                    orig.get("marketValue", 0.0) * rem_ratio
+                                )
+                                rem["avgCost"] = orig.get("avgCost", 0.0) * rem_ratio
+                                rem["unrealizedPnL"] = (
+                                    orig.get("unrealizedPnL", 0.0) * rem_ratio
+                                )
+                                rem["realizedPnL"] = (
+                                    orig.get("realizedPnL", 0.0) * rem_ratio
+                                )
+                                legs.append(rem)
+
+                        combo_exp = combo_legs[0].get("expiry", "")
+                        combo_name = self._identify_strategy_name(combo_legs)
+                        combo = self._build_combo_position(
+                            sym, combo_exp, combo_name, combo_legs, float(min_abs_pos)
+                        )
+                        final_positions.append(combo)
+
+                # Phase 2: For leftover legs, group by expiry and apply heuristic strategy recognition
+                by_exp = collections.defaultdict(list)
+                for l in legs:
+                    by_exp[l.get("expiry", "")].append(l)
+
+                for exp, exp_legs in by_exp.items():
+                    exp_legs = [l for l in exp_legs if l["position"] != 0]
+
+                    while len(exp_legs) > 1:
+                        exp_legs.sort(key=lambda x: x.get("strike", 0))
+                        matched = False
+                        match_indices = []
+                        name = ""
+
+                        # 1. Iron Condor
+                        lp = sp = sc = lc = -1
+                        for i, l in enumerate(exp_legs):
                             if l["right"] == "P" and l["position"] > 0 and lp == -1:
                                 lp = i
                             elif l["right"] == "P" and l["position"] < 0 and sp == -1:
                                 sp = i
-                        if lp != -1 and sp != -1:
-                            match_indices = [lp, sp]
-                            name = (
-                                "Bull Put Spread"
-                                if legs[lp]["strike"] < legs[sp]["strike"]
-                                else "Bear Put Spread"
-                            )
+                            elif l["right"] == "C" and l["position"] < 0 and sc == -1:
+                                sc = i
+                            elif l["right"] == "C" and l["position"] > 0 and lc == -1:
+                                lc = i
 
-                    if match_indices:
-                        extracted = [legs[i] for i in match_indices]
-                        min_abs_pos = (
-                            min(abs(e["position"]) for e in extracted)
-                            if extracted
-                            else 1
-                        )
-                        if min_abs_pos == 0:
-                            min_abs_pos = 1
-
-                        combo_legs = []
-                        for i in sorted(match_indices, reverse=True):
-                            orig = legs.pop(i)
-                            sign = 1 if orig["position"] > 0 else -1
-                            orig_abs_pos = abs(orig["position"])
-                            ratio = (
-                                (min_abs_pos / orig_abs_pos)
-                                if orig_abs_pos > 0
-                                else 1.0
-                            )
-
-                            leg = dict(orig)
-                            leg["position"] = min_abs_pos * sign
-                            leg["marketValue"] = orig["marketValue"] * ratio
-                            leg["avgCost"] = orig["avgCost"] * ratio
-                            leg["unrealizedPnL"] = orig["unrealizedPnL"] * ratio
-                            leg["realizedPnL"] = orig["realizedPnL"] * ratio
-                            combo_legs.append(leg)
-
-                            if orig_abs_pos > min_abs_pos:
-                                rem = dict(orig)
-                                rem["position"] = orig["position"] - (
-                                    min_abs_pos * sign
+                        if lp != -1 and sp != -1 and sc != -1 and lc != -1:
+                            if (
+                                exp_legs[lp]["strike"]
+                                <= exp_legs[sp]["strike"]
+                                <= exp_legs[sc]["strike"]
+                                <= exp_legs[lc]["strike"]
+                            ):
+                                match_indices = [lp, sp, sc, lc]
+                                name = (
+                                    "Iron Butterfly"
+                                    if exp_legs[sp]["strike"] == exp_legs[sc]["strike"]
+                                    else "Iron Condor"
                                 )
-                                rem_abs_pos = abs(rem["position"])
-                                rem_ratio = (
-                                    (rem_abs_pos / orig_abs_pos)
+
+                        # 2. Straddle / Strangle
+                        if not match_indices:
+                            lc = sc = lp = sp = -1
+                            for i, l in enumerate(exp_legs):
+                                if l["right"] == "C" and l["position"] > 0 and lc == -1:
+                                    lc = i
+                                elif l["right"] == "P" and l["position"] > 0 and lp == -1:
+                                    lp = i
+                                elif l["right"] == "C" and l["position"] < 0 and sc == -1:
+                                    sc = i
+                                elif l["right"] == "P" and l["position"] < 0 and sp == -1:
+                                    sp = i
+
+                            if lc != -1 and lp != -1:
+                                match_indices = [lc, lp]
+                                name = (
+                                    "Straddle"
+                                    if exp_legs[lc]["strike"] == exp_legs[lp]["strike"]
+                                    else "Strangle"
+                                )
+                            elif sc != -1 and sp != -1:
+                                match_indices = [sc, sp]
+                                name = (
+                                    "Short Straddle"
+                                    if exp_legs[sc]["strike"] == exp_legs[sp]["strike"]
+                                    else "Short Strangle"
+                                )
+
+                        # 3. Vertical Spreads
+                        if not match_indices:
+                            lc = sc = -1
+                            for i, l in enumerate(exp_legs):
+                                if l["right"] == "C" and l["position"] > 0 and lc == -1:
+                                    lc = i
+                                elif l["right"] == "C" and l["position"] < 0 and sc == -1:
+                                    sc = i
+                            if lc != -1 and sc != -1:
+                                match_indices = [lc, sc]
+                                name = (
+                                    "Bull Call Spread"
+                                    if exp_legs[lc]["strike"] < exp_legs[sc]["strike"]
+                                    else "Bear Call Spread"
+                                )
+
+                        if not match_indices:
+                            lp = sp = -1
+                            for i, l in enumerate(exp_legs):
+                                if l["right"] == "P" and l["position"] > 0 and lp == -1:
+                                    lp = i
+                                elif l["right"] == "P" and l["position"] < 0 and sp == -1:
+                                    sp = i
+                            if lp != -1 and sp != -1:
+                                match_indices = [lp, sp]
+                                name = (
+                                    "Bull Put Spread"
+                                    if exp_legs[lp]["strike"] < exp_legs[sp]["strike"]
+                                    else "Bear Put Spread"
+                                )
+
+                        if match_indices:
+                            extracted = [exp_legs[i] for i in match_indices]
+                            min_abs_pos = (
+                                min(abs(e["position"]) for e in extracted)
+                                if extracted
+                                else 1
+                            )
+                            if min_abs_pos == 0:
+                                min_abs_pos = 1
+
+                            combo_legs = []
+                            for i in sorted(match_indices, reverse=True):
+                                orig = exp_legs.pop(i)
+                                sign = 1 if orig["position"] > 0 else -1
+                                orig_abs_pos = abs(orig["position"])
+                                ratio = (
+                                    (min_abs_pos / orig_abs_pos)
                                     if orig_abs_pos > 0
                                     else 1.0
                                 )
-                                rem["marketValue"] = orig["marketValue"] * rem_ratio
-                                rem["avgCost"] = orig["avgCost"] * rem_ratio
-                                rem["unrealizedPnL"] = orig["unrealizedPnL"] * rem_ratio
-                                rem["realizedPnL"] = orig["realizedPnL"] * rem_ratio
-                                legs.append(rem)
 
-                        combo_legs.sort(key=lambda x: x.get("strike", 0))
+                                leg = dict(orig)
+                                leg["position"] = min_abs_pos * sign
+                                leg["marketValue"] = orig["marketValue"] * ratio
+                                leg["avgCost"] = orig["avgCost"] * ratio
+                                leg["unrealizedPnL"] = orig["unrealizedPnL"] * ratio
+                                leg["realizedPnL"] = orig["realizedPnL"] * ratio
+                                combo_legs.append(leg)
 
-                        combo_prev_close = 0.0
-                        combo_current_price = 0.0
-                        has_prev_close = True
-                        combo_market_price = 0.0
-                        combo_avg_price = 0.0
-                        combo_delta = 0.0
-                        has_delta = False
-                        multiplier_val = combo_legs[0].get("multiplier", 100)
+                                if orig_abs_pos > min_abs_pos:
+                                    rem = dict(orig)
+                                    rem["position"] = orig["position"] - (
+                                        min_abs_pos * sign
+                                    )
+                                    rem_abs_pos = abs(rem["position"])
+                                    rem_ratio = (
+                                        (rem_abs_pos / orig_abs_pos)
+                                        if orig_abs_pos > 0
+                                        else 1.0
+                                    )
+                                    rem["marketValue"] = orig["marketValue"] * rem_ratio
+                                    rem["avgCost"] = orig["avgCost"] * rem_ratio
+                                    rem["unrealizedPnL"] = (
+                                        orig["unrealizedPnL"] * rem_ratio
+                                    )
+                                    rem["realizedPnL"] = orig["realizedPnL"] * rem_ratio
+                                    exp_legs.append(rem)
 
-                        for c in combo_legs:
-                            rel_pos = (
-                                (c["position"] / min_abs_pos) if min_abs_pos else 1.0
+                            combo = self._build_combo_position(
+                                sym, exp, name, combo_legs, float(min_abs_pos)
                             )
+                            final_positions.append(combo)
+                            matched = True
 
-                            combo_market_price += (
-                                c.get("marketPrice") or 0.0
-                            ) * rel_pos
-                            combo_avg_price += (c.get("avgPrice") or 0.0) * rel_pos
+                        if not matched:
+                            break
 
-                            leg_delta = c.get("delta")
-                            if leg_delta is not None:
-                                has_delta = True
-                                combo_delta += leg_delta * rel_pos
-
-                            close_px = c.get("closePrice")
-                            chg_pct = c.get("changePercent")
-                            mkt_px = c.get("marketPrice")
-                            if close_px is not None and close_px > 0:
-                                prev_close = close_px
-                                combo_prev_close += prev_close * rel_pos
-                                combo_current_price += (mkt_px or 0.0) * rel_pos
-                            elif (
-                                chg_pct is not None
-                                and mkt_px is not None
-                                and abs(1 + chg_pct / 100) > 0.0001
-                            ):
-                                prev_close = mkt_px / (1 + chg_pct / 100)
-                                combo_prev_close += prev_close * rel_pos
-                                combo_current_price += mkt_px * rel_pos
-                            else:
-                                has_prev_close = False
-
-                        combo_change_pct = None
-                        if has_prev_close and abs(combo_prev_close) > 0.0001:
-                            combo_change_pct = round(
-                                (combo_current_price - combo_prev_close)
-                                / abs(combo_prev_close)
-                                * 100,
-                                2,
-                            )
-
-                        local_sym = f"{sym} {name} {exp}"
-                        combo = {
-                            "conId": "-".join(str(c["conId"]) for c in combo_legs),
-                            "symbol": sym,
-                            "localSymbol": local_sym,
-                            "secType": "COMBO",
-                            "exchange": combo_legs[0]["exchange"],
-                            "currency": combo_legs[0]["currency"],
-                            "multiplier": multiplier_val,
-                            "position": min_abs_pos,
-                            "marketPrice": round(combo_market_price, 4),
-                            "marketValue": sum(c["marketValue"] for c in combo_legs),
-                            "avgCost": sum(c["avgCost"] for c in combo_legs),
-                            "avgPrice": round(combo_avg_price, 4),
-                            "unrealizedPnL": sum(
-                                c["unrealizedPnL"] for c in combo_legs
-                            ),
-                            "realizedPnL": sum(c["realizedPnL"] for c in combo_legs),
-                            "changePercent": combo_change_pct,
-                            "pnlPercent": 0.0,
-                            "delta": round(combo_delta, 3) if has_delta else None,
-                            "expiry": exp,
-                            "dte": _calculate_dte(exp),
-                            "legs": combo_legs,
-                        }
-                        if abs(combo.get("avgCost", 0.0)) > 0.0001:
-                            combo["pnlPercent"] = round(
-                                combo["unrealizedPnL"] / abs(combo["avgCost"]) * 100,
-                                2,
-                            )
-
-                        final_positions.append(combo)
-                        matched = True
-
-                    if not matched:
-                        break
-
-                final_positions.extend(legs)
+                    final_positions.extend(exp_legs)
 
             return final_positions
         except Exception as e:
