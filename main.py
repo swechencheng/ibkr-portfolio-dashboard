@@ -1,3 +1,4 @@
+import os
 import json
 import asyncio
 from contextlib import asynccontextmanager
@@ -316,6 +317,11 @@ async def get_real_index():
 
 
 if __name__ == "__main__":
+    reload_enabled = os.environ.get("RELOAD", "false").lower() in ("1", "true", "yes")
     uvicorn.run(
-        "main:app", host="0.0.0.0", port=server_port, reload=True, log_level="warning"
+        "main:app",
+        host="0.0.0.0",
+        port=server_port,
+        reload=reload_enabled,
+        log_level="warning",
     )
