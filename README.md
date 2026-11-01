@@ -60,7 +60,11 @@ Edit `config.json` to point to your IBKR Gateway's IP address, Ports, and Accoun
 ### 4. Run the Server
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 6001 --reload
+# Standard run (reads port from config.json, safe for daemons):
+python main.py
+
+# For development with auto-reload:
+RELOAD=true python main.py
 ```
 
 ## 📱 Usage
@@ -90,6 +94,7 @@ Add an optional `delta_monitor` section to your `config.json`:
   "ibkr": { "...": "..." },
   "delta_monitor": {
     "threshold": 0.65,
+    "min_delta_change": 0.01,
     "poll_interval_sec": 30,
     "cooldown_min": 30,
     "client_id": 10
